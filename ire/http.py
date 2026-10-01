@@ -224,16 +224,18 @@ class HttpClient:
                 break
             if r.status_code == 403 and "sec.gov" in host:
                 body = (r.text or "")[:4000].lower()
+                # the rate-limit page ALSO mentions "undeclared automated tools" and the user agent: check it first
+                if "threshold" in body or "rate" in body:
+                    last_err = SourceUnavailable("SEC: limite di richieste superato (403)")
+                    if attempt < max_retries - 1:
+                        self._cooldown_until[host] = time.time() + 30 * (attempt + 1)   # shared back-off
+                        continue
+                    break
                 if "undeclared" in body or "user-agent" in body or "user agent" in body:
                     last_err = SourceUnavailable(
                         "SEC ha risposto 403 (User-Agent non accettato): in config.local.toml [sec] user_agent deve "
                         "contenere nome ed email reali.")
                     break
-                if ("rate" in body or "threshold" in body) and attempt < max_retries - 1:
-                    # SEC throttling (403 "Request Rate Threshold Exceeded"): shared back-off for all threads
-                    last_err = SourceUnavailable("SEC: limite di richieste superato (403)")
-                    self._cooldown_until[host] = time.time() + 30 * (attempt + 1)
-                    continue
                 last_err = SourceUnavailable(
                     "SEC ha risposto 403: controlla il contatto [sec] user_agent e di non superare 10 richieste/secondo.")
                 break

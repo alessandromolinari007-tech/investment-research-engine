@@ -112,10 +112,24 @@ def test_three_for_two_split_is_detected():
     b.facts["us-gaap"]["WeightedAverageNumberOfDilutedSharesOutstanding"]["units"]["shares"].clear()
     b.annual("WeightedAverageNumberOfDilutedSharesOutstanding", {2020: 100, 2021: 100, 2022: 100, 2023: 150, 2024: 150,
                                                                  2025: 150}, unit="shares")
-    fin = normalize_companyfacts("T", b.build(), apply_splits=False)
+    fin = normalize_companyfacts("T", b.build(), apply_splits=False, known_splits=[("2023-06-15", 1.5)])
     assert any(f["code"] == "POSSIBLE_UNADJUSTED_SPLIT" for f in fin.flags)
     m = compute_fundamental_metrics(fin, 2000.0)
     assert m.val("share_change_cagr_5y") is None              # no false HEAVY_DILUTION from a split
+
+
+def test_heavy_dilution_is_not_mistaken_for_a_split():
+    """Verifier: ×1.3 a year must stay dilution unless a 5:4/4:3/3:2 split is actually recorded."""
+    b = core()
+    b.annual("PaymentsToAcquirePropertyPlantAndEquipment", {y: 50 for y in YEARS})
+    b.annual("LongTermDebtNoncurrent", {y: 300 for y in YEARS}, instant=True)
+    b.facts["us-gaap"]["WeightedAverageNumberOfDilutedSharesOutstanding"]["units"]["shares"].clear()
+    b.annual("WeightedAverageNumberOfDilutedSharesOutstanding", {y: 100 * 1.3 ** i for i, y in enumerate(YEARS)},
+             unit="shares")
+    fin = normalize_companyfacts("T", b.build(), apply_splits=False, known_splits=[])
+    assert not any(f["code"] == "POSSIBLE_UNADJUSTED_SPLIT" for f in fin.flags)
+    m = compute_fundamental_metrics(fin, 2000.0)
+    assert m.val("share_change_cagr_5y") == pytest.approx(0.3, rel=1e-3)   # CAGR on actual day count
 
 
 def test_us_gaap_finance_leases_in_debt_and_fcf():
@@ -173,3 +187,13 @@ def test_yahoo_shareholder_yield_counts_issuance():
     assert "share_issuance" in fin.ttm                       # issuance rolled into TTM like dividends/buybacks
     m = compute_fundamental_metrics(fin, 1000.0)
     assert m.val("shareholder_yield") == pytest.approx((50 + 30 - 160) / 1000)
+
+
+def test_old_capital_lease_tag_does_not_drop_current_finance_leases():
+    b = core()
+    b.annual("PaymentsToAcquirePropertyPlantAndEquipment", {y: 50 for y in YEARS})
+    b.annual("LongTermDebtAndCapitalLeaseObligations", {2018: 280}, instant=True)        # old tagging
+    b.annual("LongTermDebtNoncurrent", {y: 300 for y in YEARS}, instant=True)
+    b.annual("FinanceLeaseLiability", {y: 200 for y in YEARS}, instant=True)
+    fin = normalize_companyfacts("T", b.build())
+    assert fin.last("total_debt") == pytest.approx(500)

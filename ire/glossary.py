@@ -156,6 +156,11 @@ def num_it(v: float, decimals: int = 1) -> str:
     return it(f"{v:,.{decimals}f}")
 
 
+def pct(v: float, decimals: int = 1, sign: bool = False) -> str:
+    """0.123 → '12,3%' (Italian decimal comma)."""
+    return it(f"{v * 100:{'+' if sign else ''}.{decimals}f}%")
+
+
 def fmt(key: str, v, currency: str | None = None) -> str:
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return "n/d"

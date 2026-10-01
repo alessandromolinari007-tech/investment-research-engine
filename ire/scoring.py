@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from .valuation import Signal, valuation_verdict
+from .glossary import num_it, pct
 
 # (metric, direction +1 higher-better / -1 lower-better, weight)
 PILLARS: dict[str, dict[str, list[tuple[str, int, float]]]] = {
@@ -299,15 +300,15 @@ def is_deteriorating(row: pd.Series, flags: list[dict]) -> list[str]:
             reasons.append(txt)
     r5, r3 = _num(row, "revenue_cagr_5y"), _num(row, "revenue_cagr_3y")
     if r5 is not None and r5 < 0:
-        reasons.append(f"ricavi in calo da 5 anni ({r5:.1%}/anno)")
+        reasons.append(f"ricavi in calo da 5 anni ({pct(r5, 1)}/anno)")
     elif r3 is not None and r3 < -0.03:
-        reasons.append(f"ricavi in calo da 3 anni ({r3:.1%}/anno)")
+        reasons.append(f"ricavi in calo da 3 anni ({pct(r3, 1)}/anno)")
     omt = _num(row, "op_margin_trend")
     if omt is not None and -0.05 <= omt < -0.03:
-        reasons.append(f"margine operativo {omt * 100:.1f} punti sotto la media 5 anni")
+        reasons.append(f"margine operativo {num_it(omt * 100, 1)} punti sotto la media 5 anni")
     fps = _num(row, "fcf_ps_cagr_5y")
     if fps is not None and fps < -0.05:
-        reasons.append(f"free cash flow per azione in calo ({fps:.1%}/anno in 5 anni)")
+        reasons.append(f"free cash flow per azione in calo ({pct(fps, 1)}/anno in 5 anni)")
     return reasons
 
 
@@ -360,12 +361,12 @@ def classify_row(row: pd.Series, flags: list[dict]) -> tuple[str, str]:
         if cheap_hist:
             extra.append("multipli bassi rispetto alla propria storia")
         if depressed:
-            extra.append(f"prezzo {dd:.0%} dal massimo a 3 anni")
+            extra.append(f"prezzo {pct(dd, 0)} dal massimo a 3 anni")
         if extra:
-            return (C_TEMP, f"Alta qualità, multipli bassi rispetto ai pari (economicità vs pari {vp:.0f}/100) e "
+            return (C_TEMP, f"Alta qualità, multipli bassi rispetto ai pari (economicità vs pari {num_it(vp, 0)}/100) e "
                     + " e ".join(extra) + f"; {checks}. "
                     "È un'ipotesi da verificare: capire PERCHÉ il prezzo è sceso (notizie, guidance, settore).")
-        return C_QDISC, f"Alta qualità e multipli più bassi dei pari del settore (economicità vs pari {vp:.0f}/100); {checks}."
+        return C_QDISC, f"Alta qualità e multipli più bassi dei pari del settore (economicità vs pari {num_it(vp, 0)}/100); {checks}."
     cyc = any(f.get("code") == "CYCLICAL_PEAK" for f in flags)
     if vn >= 70 and (qn < 40 or det or cyc):
         # cheap on peak-cycle margins is the textbook value trap
@@ -403,10 +404,10 @@ def verdict_for(row: pd.Series, rf: float | None, flags: list[dict] | None = Non
     if v is not None and pd.notna(v):
         if v >= 65:
             sig.append(Signal("Rispetto ai concorrenti", "economica",
-                              f"multipli più bassi dei pari (economicità vs pari {v:.0f}/100)", 1.0, "rendimento"))
+                              f"multipli più bassi dei pari (economicità vs pari {num_it(v, 0)}/100)", 1.0, "rendimento"))
         elif v <= 35:
             sig.append(Signal("Rispetto ai concorrenti", "costosa",
-                              f"multipli più alti dei pari (economicità vs pari {v:.0f}/100)", 1.0, "rendimento"))
+                              f"multipli più alti dei pari (economicità vs pari {num_it(v, 0)}/100)", 1.0, "rendimento"))
         else:
             sig.append(Signal("Rispetto ai concorrenti", "ragionevole", "multipli in linea con il settore", 1.0, "rendimento"))
     hist_keys = ("pe_vs_history_pct", "ev_ebit_vs_history_pct", "p_fcf_vs_history_pct")
@@ -418,37 +419,37 @@ def verdict_for(row: pd.Series, rf: float | None, flags: list[dict] | None = Non
             sig.append(Signal("Rispetto alla propria storia", "ragionevole",
                               "multipli bassi vs storia, ma con margini ai massimi del ciclo: non indicativo", 0.0))
         elif h <= 0.3:
-            sig.append(Signal("Rispetto alla propria storia", "economica", f"multipli attuali tra i più bassi degli ultimi anni (percentile {h:.0%})"))
+            sig.append(Signal("Rispetto alla propria storia", "economica", f"multipli attuali tra i più bassi degli ultimi anni (percentile {pct(h, 0)})"))
         elif h >= 0.7:
-            sig.append(Signal("Rispetto alla propria storia", "costosa", f"multipli attuali tra i più alti degli ultimi anni (percentile {h:.0%})"))
+            sig.append(Signal("Rispetto alla propria storia", "costosa", f"multipli attuali tra i più alti degli ultimi anni (percentile {pct(h, 0)})"))
         else:
             sig.append(Signal("Rispetto alla propria storia", "ragionevole", "multipli nella media storica"))
     ig, gap = _num(row, "implied_fcf_growth"), _num(row, "growth_gap")
     if ig is not None:
         if ig > 0.15:
-            sig.append(Signal("Crescita implicita nel prezzo", "costosa", f"il prezzo è coerente con circa {ig:.0%} di crescita annua del FCF (stima di modello)"))
+            sig.append(Signal("Crescita implicita nel prezzo", "costosa", f"il prezzo è coerente con circa {pct(ig, 0)} di crescita annua del FCF (stima di modello)"))
         elif gap is not None:
             if gap <= -0.03 and cyclical_peak:
                 sig.append(Signal("Crescita implicita nel prezzo", "ragionevole",
                                   "crescita storica gonfiata dal ciclo: confronto non indicativo", 0.0))
             elif gap <= -0.03:
                 sig.append(Signal("Crescita implicita nel prezzo", "economica",
-                                  f"il prezzo è coerente con ~{ig:.1%}/anno, meno di quanto fatto storicamente (~{ig - gap:.1%})"))
+                                  f"il prezzo è coerente con ~{pct(ig, 1)}/anno, meno di quanto fatto storicamente (~{pct(ig - gap, 1)})"))
             elif gap >= 0.03:
                 sig.append(Signal("Crescita implicita nel prezzo", "costosa",
-                                  f"il prezzo è coerente con ~{ig:.1%}/anno, più della crescita storica (~{ig - gap:.1%})"))
+                                  f"il prezzo è coerente con ~{pct(ig, 1)}/anno, più della crescita storica (~{pct(ig - gap, 1)})"))
             else:
-                sig.append(Signal("Crescita implicita nel prezzo", "ragionevole", f"crescita implicita ~{ig:.1%}, simile alla storica"))
+                sig.append(Signal("Crescita implicita nel prezzo", "ragionevole", f"crescita implicita ~{pct(ig, 1)}, simile alla storica"))
     ey = _num(row, "earnings_yield_after_tax") if not _is(row, "is_banklike") else _num(row, "earnings_yield_equity")
     lbl = "rendimento operativo dopo le tasse" if not _is(row, "is_banklike") else "rendimento degli utili"
     if ey is not None and rf is not None:
         if ey >= rf + 0.03:
-            sig.append(Signal("Rendimento vs tassi", "economica", f"{lbl} {ey:.1%} vs titoli di Stato {rf:.1%}", 0.5, "rendimento"))
+            sig.append(Signal("Rendimento vs tassi", "economica", f"{lbl} {pct(ey, 1)} vs titoli di Stato {pct(rf, 1)}", 0.5, "rendimento"))
         elif ey <= rf + 0.005:
-            sig.append(Signal("Rendimento vs tassi", "costosa", f"{lbl} {ey:.1%}, inferiore o simile ai titoli di Stato {rf:.1%}",
+            sig.append(Signal("Rendimento vs tassi", "costosa", f"{lbl} {pct(ey, 1)}, inferiore o simile ai titoli di Stato {pct(rf, 1)}",
                               0.5, "rendimento"))
         else:
-            sig.append(Signal("Rendimento vs tassi", "ragionevole", f"{lbl} {ey:.1%} vs titoli di Stato {rf:.1%}", 0.5, "rendimento"))
+            sig.append(Signal("Rendimento vs tassi", "ragionevole", f"{lbl} {pct(ey, 1)} vs titoli di Stato {pct(rf, 1)}", 0.5, "rendimento"))
     return valuation_verdict(sig)
 
 

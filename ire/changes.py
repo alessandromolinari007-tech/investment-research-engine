@@ -5,6 +5,7 @@ import json
 import sqlite3
 
 import pandas as pd
+from .glossary import num_it
 
 from ire.qualitative import is_text_flag
 from ire.scoring import C_QDET, C_QFAIR, NEGATIVE_CLASSES, QUALITY_DISCOUNT
@@ -84,7 +85,7 @@ def compute_changes(con: sqlite3.Connection, new_run: int, old_run: int) -> pd.D
             add(cid, "Valutazione", f"{o['valuation_verdict']} → {r['valuation_verdict']}", "info")
         if pd.notna(r["robust_score"]) and pd.notna(o["robust_score"]) and abs(r["robust_score"] - o["robust_score"]) >= 10:
             d = r["robust_score"] - o["robust_score"]
-            add(cid, "Punteggio", f"Punteggio robusto {o['robust_score']:.0f} → {r['robust_score']:.0f} ({d:+.0f})",
+            add(cid, "Punteggio", f"Punteggio robusto {num_it(o['robust_score'], 0)} → {num_it(r['robust_score'], 0)} ({d:+.0f})",
                 "media" if d < 0 else "info")
     if same_mode:
         for cid in s0i.index.difference(s1i.index):
@@ -107,7 +108,7 @@ def compute_changes(con: sqlite3.Connection, new_run: int, old_run: int) -> pd.D
             bad = d[d * direction >= thr]
             for cid, delta in bad.items():
                 old, new = m0.loc[cid, metric], m1.loc[cid, metric]
-                txt = (f"{label}: {old * 100:.1f}% → {new * 100:.1f}%" if pts else f"{label}: {old:.1f} → {new:.1f}")
+                txt = (f"{label}: {num_it(old * 100, 1)}% → {num_it(new * 100, 1)}%" if pts else f"{label}: {num_it(old, 1)} → {num_it(new, 1)}")
                 add(cid, "Fondamentali", txt, "media")
 
     # new flags; a TEXT flag counts as new only if the annual report was analysed in BOTH runs

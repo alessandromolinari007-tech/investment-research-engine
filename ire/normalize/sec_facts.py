@@ -38,7 +38,10 @@ ASSUME_ZERO_IF_NEVER_REPORTED = {
 # never reported ≠ zero for these: leaving them missing is safer than inventing a favourable 0
 NEVER_ASSUME_ZERO = {"capex", "sbc", "total_debt"}
 DEBT_PARTS = ["debt_total_reported", "debt_lt_total", "debt_noncurrent", "debt_current", "debt_lt_current", "st_borrowings"]
-NICE_SPLIT_RATIOS = [1.25, 4 / 3, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 15, 20, 25, 50]
+NICE_SPLIT_RATIOS = [2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 50]
+# fractional ratios (3:2, 5:4, 4:3, 5:2) look like ordinary dilution or buybacks: treated as a split ONLY when
+# a split with that ratio is recorded (Yahoo splits table) in the same fiscal year
+FRACTIONAL_SPLIT_RATIOS = [1.25, 4 / 3, 1.5, 2.5]
 # US GAAP debt concepts that already include finance (capital) lease obligations
 DEBT_WITH_LEASES = {"DebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
                     "LongTermDebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsCurrent"}
@@ -188,6 +191,7 @@ def normalize_companyfacts(
     splits: list[tuple[str, float]] | None = None,
     apply_splits: bool = True,
     fetched_at: str | None = None,
+    known_splits: list[tuple[str, float]] | None = None,
 ) -> Financials:
     splits = sorted(splits or []) if apply_splits else []
     cf = _add_capex_sum(cf)
@@ -195,7 +199,11 @@ def normalize_companyfacts(
     fin = Financials(company_id=company_id, currency=currency, source=SOURCE, tier="A", annual=pd.DataFrame())
     fin.gaap = detect_gaap(cf)
     us_facts = cf.get("facts", {}).get("us-gaap", {})
-    fin.debt_has_leases = any(c in us_facts for c in DEBT_WITH_LEASES)
+    # balance-sheet dates on which the debt is reported with a concept that ALREADY includes finance leases:
+    # decided date by date (a filer may have used such a concept years ago and separate lines today)
+    fin.debt_lease_ends = {pd.Timestamp(e["end"]) for c in DEBT_WITH_LEASES
+                           for arr in us_facts.get(c, {}).get("units", {}).values() for e in arr if e.get("end")}
+    fin.debt_has_leases = bool(fin.debt_lease_ends)
     if currency is None:
         fin.flags.append({"code": "NO_MONETARY_FACTS", "severity": "data",
                           "message": "Nessun dato contabile XBRL in valuta trovato"})
@@ -320,7 +328,9 @@ def normalize_companyfacts(
         if d["type"] != INSTANT or not instants_all.get(item):
             continue
         last_end = max(e["end"] for _, _, e in instants_all[item])
-        if anchor and item != "shares_outstanding" and _days(last_end, anchor) > 5:
+        # stale only if missing at the latest balance-sheet date AND at the latest annual date (items such as
+        # short-term investments may appear only in the 10-K, not in the following 10-Q)
+        if anchor and item != "shares_outstanding" and _days(last_end, anchor) > 5 and _days(last_end, fy_ends[-1]) > 5:
             if item in ASSUME_ZERO_IF_NEVER_REPORTED:
                 fin.latest[item] = (0.0, pd.Timestamp(anchor))
                 fin.notes.append(f"{item}: non più riportato dopo il {last_end} → 0 nell'ultimo bilancio (assunzione).")
@@ -347,7 +357,7 @@ def normalize_companyfacts(
             p["restated"] = True
 
     # ---------------------------------------------------------------- split sanity check
-    _check_share_jumps(fin, df)
+    _check_share_jumps(fin, df, known_splits if known_splits is not None else splits)
 
     # ---------------------------------------------------------------- DB rows
     for (item, end), p in provenance.items():
@@ -465,7 +475,12 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
             df[c] = np.nan
     ifrs = getattr(fin, "gaap", "US GAAP") == "IFRS"
     # leases added to debt: IFRS 16 leases; US GAAP finance leases unless the debt concept already includes them
-    add_leases = ifrs or not getattr(fin, "debt_has_leases", False)
+    lease_ends = getattr(fin, "debt_lease_ends", set())
+
+    def leases_in_debt(dt) -> bool:
+        return (not ifrs) and any(abs((dt - e).days) <= 5 for e in lease_ends)
+
+    add_leases = True
     fin.add_leases = add_leases
     # total liabilities: many US filers do not tag "Liabilities" → liabilities and equity − equity (incl. NCI)
     if "liabilities_and_equity" in df.columns:
@@ -514,6 +529,13 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
                 fin.flags.append({"code": "DEBT_UNKNOWN", "severity": "data",
                                   "message": "Nell'ultimo bilancio il debito non è identificabile ma ci sono interessi passivi: "
                                              "EV, debito netto e multipli EV dell'ultimo anno non calcolati."})
+        lr = df.iloc[-1]
+        if (pd.notna(lr.get("debt_lt_total")) and pd.notna(lr.get("debt_current")) and pd.isna(lr.get("debt_noncurrent"))
+                and pd.isna(lr.get("debt_lt_current")) and pd.isna(lr.get("st_borrowings"))
+                and pd.isna(lr.get("debt_total_reported"))):
+            fin.flags.append({"code": "DEBT_PARTIAL", "severity": "data",
+                              "message": "Debito a breve non scomponibile (quota corrente del debito a lungo vs altri "
+                                         "finanziamenti a breve): eventuali finanziamenti a breve potrebbero mancare dal totale."})
         cols = [c for c in DEBT_PARTS if c in df.columns]
         only_current = (last[[c for c in cols if c in ("debt_current", "debt_lt_current", "st_borrowings")]].notna().any()
                         and not last[[c for c in cols if c in ("debt_total_reported", "debt_lt_total", "debt_noncurrent")]].notna().any())
@@ -524,6 +546,7 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
                                          "sono rilevanti: il debito totale potrebbe essere sottostimato."})
     if add_leases:
         leases = df.apply(_lease_total, axis=1)
+        leases = leases.where([not leases_in_debt(dt) for dt in df.index], 0.0)
         if (leases > 0).any():
             df["lease_liabilities"] = leases
             df["total_debt"] = df["total_debt"] + leases
@@ -573,8 +596,9 @@ def _debt_row(r: pd.Series) -> float:
     if noncur is None and g("debt_lt_total") is not None:
         lt_total = g("debt_lt_total")
         if g("debt_lt_current") is None and g("debt_current") is not None:
-            # long-term total ALREADY includes its current portion, which is also inside "debt current":
-            # add only the other short-term borrowings to avoid counting the current maturities twice
+            # long-term total ALREADY includes its current portion, which is also inside "debt current": add
+            # only the other short-term borrowings (if none is reported separately, "debt current" minus its
+            # unknown current-maturity part cannot be split: flagged DEBT_PARTIAL in _derive)
             return float(lt_total + (g("st_borrowings") or 0.0))
         noncur = lt_total - (g("debt_lt_current") or 0.0)
     if noncur is None and cur is None:
@@ -594,7 +618,9 @@ def _latest_debt(fin: Financials) -> None:
     same = {k: v for k, v in parts.items() if fin.latest[k][1] == latest_date}
     val = _debt_row(pd.Series(same))
     if pd.notna(val):
-        if getattr(fin, "add_leases", getattr(fin, "gaap", "") == "IFRS"):
+        in_debt = getattr(fin, "gaap", "") != "IFRS" and any(
+            abs((latest_date - e).days) <= 5 for e in getattr(fin, "debt_lease_ends", set()))
+        if not in_debt:
             lease = {k: fin.latest[k][0] for k in ("lease_liab_total", "lease_liab_noncurrent", "lease_liab_current")
                      if k in fin.latest and fin.latest[k][1] == latest_date}
             val += _lease_total(pd.Series(lease)) if lease else 0.0
@@ -702,7 +728,8 @@ def _compute_ttm(cf, currency, fin: Financials, df: pd.DataFrame, last_fy_end: s
                           if used_interim else "TTM = ultimo anno fiscale disponibile (nessun trimestrale XBRL più recente)")
 
 
-def _check_share_jumps(fin: Financials, df: pd.DataFrame) -> None:
+def _check_share_jumps(fin: Financials, df: pd.DataFrame, known_splits: list[tuple[str, float]] | None = None) -> None:
+    known = [(pd.Timestamp(d), float(x)) for d, x in (known_splits or [])]
     for col in ("shares_diluted", "shares_outstanding"):
         if col not in df.columns:
             continue
@@ -710,8 +737,12 @@ def _check_share_jumps(fin: Financials, df: pd.DataFrame) -> None:
         if len(s) < 2:
             continue
         ratios = (s / s.shift(1)).dropna()
+        prev_dates = dict(zip(s.index[1:], s.index[:-1]))
         for dt, r in ratios.items():
-            for nice in NICE_SPLIT_RATIOS:
+            confirmed = [x for d, x in known if prev_dates[dt] < d <= dt + pd.Timedelta(days=100)]
+            candidates = NICE_SPLIT_RATIOS + [f for f in FRACTIONAL_SPLIT_RATIOS
+                                              if any(abs(x - f) / f < 0.04 or abs(x - 1 / f) * f < 0.04 for x in confirmed)]
+            for nice in candidates:
                 if abs(r - nice) / nice < 0.04 or abs(r - 1 / nice) / (1 / nice) < 0.04:
                     fin.flags.append({
                         "code": "POSSIBLE_UNADJUSTED_SPLIT", "severity": "data",

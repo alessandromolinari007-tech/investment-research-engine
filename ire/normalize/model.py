@@ -27,6 +27,7 @@ class Financials:
     gaap: str = ""                           # 'US GAAP' | 'IFRS' | '' (unknown, e.g. Yahoo)
     debt_has_leases: bool = False            # US GAAP debt concept already includes finance leases
     add_leases: bool = False                 # lease liabilities added to financial debt
+    debt_lease_ends: set = field(default_factory=set)   # dates whose debt concept already includes leases
 
     @property
     def years(self) -> int:

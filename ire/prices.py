@@ -160,9 +160,10 @@ class PriceStore:
                     # (it is replaced only when the full re-download succeeds); only the new days are appended,
                     # and the ticker is marked for a full download (full_fetched_at = NULL)
                     readjusted.append(t)
-                    newer = df[df.index > pd.Timestamp(m["last_date"])]
-                    if not newer.empty:
-                        self._insert_rows(t, newer)
+                    # rescale the stored history to the new adjustment basis (median ratio on the overlapping
+                    # dates), so that it stays usable even if the full re-download fails in this run
+                    self._rescale(t, df)
+                    self._insert_rows(t, df)
                     self._write_meta(t, pd.Timestamp(m["first_date"] or df.index.min()),
                                      max(pd.Timestamp(m["last_date"]), df.index.max()),
                                      m["requested_start"] or starts[t], full=False)
@@ -196,6 +197,23 @@ class PriceStore:
             if ok.any() and float((b[ok] / a[ok] - 1).abs().max()) > OVERLAP_TOL:
                 return False
         return True
+
+    def _rescale(self, t: str, df: pd.DataFrame) -> None:
+        old = pd.read_sql_query("SELECT date, close, adj_close FROM prices WHERE ticker=? AND date>=? AND date<=?",
+                                self.con, params=[t, df.index.min().strftime("%Y-%m-%d"),
+                                                  df.index.max().strftime("%Y-%m-%d")])
+        if old.empty:
+            return
+        old["date"] = pd.to_datetime(old["date"])
+        j = old.set_index("date").join(df[["close", "adj_close"]], rsuffix="_new", how="inner")
+        f = {}
+        for col in ("close", "adj_close"):
+            r = (j[f"{col}_new"] / j[col]).replace([np.inf, -np.inf], np.nan).dropna()
+            if len(r):
+                f[col] = float(r.median())
+        if f:
+            self.con.execute("UPDATE prices SET close = close * ?, adj_close = adj_close * ? WHERE ticker=? AND date<?",
+                             (f.get("close", 1.0), f.get("adj_close", 1.0), t, df.index.min().strftime("%Y-%m-%d")))
 
     def _insert_rows(self, t: str, df: pd.DataFrame) -> None:
         dates = df.index.strftime("%Y-%m-%d")

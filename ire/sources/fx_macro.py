@@ -62,7 +62,11 @@ def fred_series(series: str) -> pd.DataFrame:
     return df
 
 
-MAX_FX_GAP_DAYS = 10    # a rate older than this (vs the date asked, or vs the newest rate in the table) is not used
+MAX_FX_GAP_DAYS = 10
+
+
+def _source_group(source: str) -> str:
+    return "yahoo" if str(source).lower().startswith("yahoo") else str(source)    # a rate older than this (vs the date asked, or vs the newest rate in the table) is not used
 
 
 class FxTable:
@@ -92,12 +96,17 @@ class FxTable:
             # freshness is judged within each SOURCE: a Yahoo pair updated today must not make every ECB
             # currency look stale, and vice versa
             d = pd.to_datetime(df["date"])
-            self.source_latest = d.groupby(df["source"]).max().to_dict()
+            self.source_latest = d.groupby(df["source"].map(_source_group)).max().to_dict()
         self.sources["EUR"] = "identity"
 
     def _reference(self, cur: str) -> pd.Timestamp | None:
-        src = self.sources.get(cur)
-        return self.source_latest.get(src, self.latest)
+        """Date a currency's last rate is judged against. ECB currencies: the newest ECB rate (a Yahoo pair
+        updated today must not make them stale). Yahoo currencies: the newest rate of ANY source (they are
+        downloaded only when needed, so they must be re-downloaded when older than the ECB table)."""
+        group = _source_group(self.sources.get(cur, ""))
+        if group == "yahoo":
+            return self.latest
+        return self.source_latest.get(group, self.latest)
 
     def last_observation(self, cur: str) -> pd.Timestamp | None:
         if self.wide.empty or cur not in self.wide.columns:

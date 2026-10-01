@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from .glossary import fmt, label
+from .glossary import fmt, label, num_it, pct
 from .scoring import PILLAR_IT, _is
 
 HIST_GROWTH_KEYS = ("fcf_cagr_5y", "revenue_cagr_5y", "revenue_cagr_3y")
@@ -88,7 +88,7 @@ WEAKNESS_OK = {
 
 
 def _sentence(templates: dict, ok: dict, key: str, v, p: float, better: bool) -> str:
-    rel = f" — percentile {p:.0f} tra i pari (50 = mediana)."
+    rel = f" — percentile {num_it(p, 0)} tra i pari (50 = mediana)."
     test = ok.get(key)
     if v is not None and (test is None or _safe(test, v)):
         return templates[key].format(v=fmt(key, v)) + rel
@@ -143,34 +143,34 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
             if metrics.get(k) is not None:
                 hist = (k, metrics[k])
                 break
-        txt = (f"Con le ipotesi del modello (tasso di sconto {rdcf.get('discount_rate', 0):.1%}, crescita perpetua "
-               f"{rdcf.get('terminal_growth', 0):.1%}) il prezzo attuale è coerente con una crescita del free cash flow "
-               f"di circa il {ig:.1%} l'anno per {rdcf.get('years', 10)} anni. È una stima: cambia molto con le ipotesi.")
+        txt = (f"Con le ipotesi del modello (tasso di sconto {pct(rdcf.get('discount_rate', 0), 1)}, crescita perpetua "
+               f"{pct(rdcf.get('terminal_growth', 0), 1)}) il prezzo attuale è coerente con una crescita del free cash flow "
+               f"di circa il {pct(ig, 1)} l'anno per {rdcf.get('years', 10)} anni. È una stima: cambia molto con le ipotesi.")
         if hist:
             txt += f" Storicamente: {label(hist[0]).lower()} {fmt(hist[0], hist[1])}."
         paying.append(txt)
-        if hist and hist[1] < ig - 0.01:
+        if hist and hist[1] < ig - 0.03:        # same 3-point threshold as the valuation signal
             must.append(f"Già oggi la crescita storica ({label(hist[0]).lower()} {fmt(hist[0], hist[1])}) è inferiore a "
-                        f"quella coerente con il prezzo ({ig:.1%} l'anno): il prezzo presuppone un'accelerazione.")
+                        f"quella coerente con il prezzo ({pct(ig, 1)} l'anno): il prezzo presuppone un'accelerazione.")
         else:
             must.append(f"Con le ipotesi del modello, il prezzo attuale presuppone una crescita media del free cash flow di "
-                        f"circa il {ig:.1%} l'anno: una crescita inferiore renderebbe il prezzo meno giustificato.")
+                        f"circa il {pct(ig, 1)} l'anno: una crescita inferiore renderebbe il prezzo meno giustificato.")
     om = metrics.get("op_margin_5y_median")
     if om is not None and not _is(row, "is_banklike"):
-        must.append(f"La tesi presuppone margini vicini ai livelli storici (margine operativo mediano {om:.1%}).")
+        must.append(f"La tesi presuppone margini vicini ai livelli storici (margine operativo mediano {pct(om, 1)}).")
 
     monitor = []
     if om is not None and not _is(row, "is_banklike"):
-        monitor.append(f"Margine operativo sotto {max(om - 0.05, 0):.1%} (5 punti sotto la mediana storica)")
+        monitor.append(f"Margine operativo sotto {pct(max(om - 0.05, 0), 1)} (5 punti sotto la mediana storica)")
     rg = metrics.get("revenue_cagr_5y") or metrics.get("revenue_cagr_3y")
     if ig is not None:
-        monitor.append(f"Crescita del free cash flow stabilmente sotto il {ig - 0.03:.1%} l'anno "
-                       f"(3 punti sotto quanto coerente con il prezzo, {ig:.1%})")
+        monitor.append(f"Crescita del free cash flow stabilmente sotto il {pct(ig - 0.03, 1)} l'anno "
+                       f"(3 punti sotto quanto coerente con il prezzo, {pct(ig, 1)})")
     elif rg is not None:
-        monitor.append(f"Crescita dei ricavi sotto {max(rg / 2, 0):.1%} (metà della media storica)")
+        monitor.append(f"Crescita dei ricavi sotto {pct(max(rg / 2, 0), 1)} (metà della media storica)")
     nde = metrics.get("net_debt_ebitda")
     if nde is not None:
-        monitor.append(f"Debito netto/EBITDA sopra {max(3.0, nde + 1.5):.1f}× (oggi {nde:.1f}×)")
+        monitor.append(f"Debito netto/EBITDA sopra {num_it(max(3.0, nde + 1.5), 1)}× (oggi {num_it(nde, 1)}×)")
     monitor.append("Aumento del numero di azioni oltre il 2% l'anno (diluizione)")
     monitor.append("Comparsa di nuove red flag (restatement, cambio revisore, going concern)")
 

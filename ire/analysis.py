@@ -11,7 +11,7 @@ import pandas as pd
 from .metrics import MetricSet, compute_fundamental_metrics
 from .normalize.model import Financials
 from .risk import price_risk_metrics
-from .glossary import label as glabel
+from .glossary import label as glabel, num_it, pct as fpct
 from .thesis import HIST_GROWTH_KEYS
 from .sources.fx_macro import FxTable
 from .valuation import ReverseDCF, historical_multiples, percentile_vs_history, reverse_dcf
@@ -79,12 +79,13 @@ def market_cap_fin_ccy(company: dict[str, Any], fin: Financials, info: dict[str,
                                        "Capitalizzazione calcolata (prezzo × azioni Yahoo) diversa di oltre il 50% da quella "
                                        "indicata da Yahoo: possibile conteggio di azioni ordinarie invece di ADR; da verificare"))
                     conflicts.append({"item": "market_cap", "period_end": None, "value_a": mcap_p,
-                                      "source_a": "prezzo ADR × azioni Yahoo", "value_b": ymc, "source_b": "Yahoo marketCap",
+                                      "source_a": "prezzo ADR × azioni Yahoo", "value_b": ymc, "source_b": "Yahoo marketCap (usato)",
                                       "pct_diff": mcap_p / ymc - 1,
                                       "likely_reason": "rapporto ADR/azioni ordinarie non applicato o conteggio azioni errato"})
+                    mcap_p, method = float(ymc), "capitalizzazione indicata da Yahoo (prezzo × azioni incoerente)"
                 if abs(math.log(ratio / nearest)) >= 0.06:
                     flags.append(_flag("ADR_RATIO_UNCERTAIN", "data",
-                                       f"Rapporto tra azioni ordinarie (filing) e azioni Yahoo = {ratio:.3f}: non corrisponde a un "
+                                       f"Rapporto tra azioni ordinarie (filing) e azioni Yahoo = {num_it(ratio, 3)}: non corrisponde a un "
                                        "rapporto ADR standard; capitalizzazione da verificare"))
     if mcap_p is None:
         return None, det, [_flag("NO_MARKET_CAP", "data", "Capitalizzazione non determinabile")], conflicts
@@ -138,8 +139,8 @@ def analyze_company(company: dict[str, Any], fin: Financials, info: dict[str, An
                          int(cfg.get("valuation.dcf_years", 10)), fin.ttm.get("sbc"))
         res.rdcf = rd
         m.add("implied_fcf_growth", rd.implied_g, "estimate", f"{rd.years} anni",
-              f"crescita annua del FCF implicita nel prezzo (reverse DCF): tasso di sconto {rd.discount_rate:.1%} "
-              f"(risk-free {rd.risk_free:.1%} + premio {rd.erp:.1%}), crescita perpetua {rd.terminal_growth:.1%}, "
+              f"crescita annua del FCF implicita nel prezzo (reverse DCF): tasso di sconto {fpct(rd.discount_rate, 1)} "
+              f"(risk-free {fpct(rd.risk_free, 1)} + premio {fpct(rd.erp, 1)}), crescita perpetua {fpct(rd.terminal_growth, 1)}, "
               f"FCF base = {rd.fcf_base_method}. {rd.status}",
               fcf_base=rd.fcf_base, discount_rate=rd.discount_rate, risk_free_source=rd.risk_free_source)
         # compare like with like: implied growth of TOTAL FCF vs historical growth of TOTAL FCF (or revenue)
@@ -241,47 +242,47 @@ def fundamental_flags(m: MetricSet, fin: Financials, company: dict[str, Any]) ->
         nde = v("net_debt_ebitda")
         if nde is not None and not heavy_debt_ok:
             if nde > 6:
-                f.append(_flag("HIGH_LEVERAGE", "high", f"Debito netto pari a {nde:.1f}× EBITDA: leva molto elevata"))
+                f.append(_flag("HIGH_LEVERAGE", "high", f"Debito netto pari a {num_it(nde, 1)}× EBITDA: leva molto elevata"))
             elif nde > 4:
-                f.append(_flag("HIGH_LEVERAGE", "medium", f"Debito netto pari a {nde:.1f}× EBITDA: leva elevata"))
+                f.append(_flag("HIGH_LEVERAGE", "medium", f"Debito netto pari a {num_it(nde, 1)}× EBITDA: leva elevata"))
         ic = v("interest_coverage")
         if ic is not None:
             if ic < 1.5:
-                f.append(_flag("LOW_INTEREST_COVERAGE", "high", f"L'utile operativo copre gli interessi solo {ic:.1f} volte"))
+                f.append(_flag("LOW_INTEREST_COVERAGE", "high", f"L'utile operativo copre gli interessi solo {num_it(ic, 1)} volte"))
             elif ic < 3:
-                f.append(_flag("LOW_INTEREST_COVERAGE", "medium", f"Copertura interessi bassa ({ic:.1f}×)"))
+                f.append(_flag("LOW_INTEREST_COVERAGE", "medium", f"Copertura interessi bassa ({num_it(ic, 1)}×)"))
         fcf = fin.series("fcf")
         if len(fcf) >= 2 and fcf.iloc[-1] < 0 and fcf.iloc[-2] < 0:
             f.append(_flag("NEGATIVE_FCF", "medium", "Free cash flow negativo negli ultimi due anni fiscali: l'azienda consuma cassa"))
         om_t = v("op_margin_trend")
         if om_t is not None and om_t < -0.05:
             f.append(_flag("MARGIN_DETERIORATION", "medium",
-                           f"Margine operativo ultimo anno {om_t * 100:.1f} punti sotto la mediana 5 anni"))
+                           f"Margine operativo ultimo anno {num_it(om_t * 100, 1)} punti sotto la mediana 5 anni"))
         z = v("altman_z")
         if z is not None and z < 1.8 and sector not in ("Utilities", "Real Estate", "Financial Services"):
-            f.append(_flag("ALTMAN_DISTRESS", "medium", f"Altman Z = {z:.2f} (<1.8, zona di stress finanziario)"))
+            f.append(_flag("ALTMAN_DISTRESS", "medium", f"Altman Z = {num_it(z, 2)} (<1.8, zona di stress finanziario)"))
         bm = v("beneish_m")
         if bm is not None and bm > -1.78:
             f.append(_flag("BENEISH_WARNING", "medium",
-                           f"Beneish M-score {bm:.2f} > −1.78: profilo contabile da approfondire (molti falsi positivi nelle aziende in forte crescita)"))
+                           f"Beneish M-score {num_it(bm, 2)} > −1.78: profilo contabile da approfondire (molti falsi positivi nelle aziende in forte crescita)"))
         acc = v("accruals_ratio")
         if acc is not None and acc > 0.10:
-            f.append(_flag("HIGH_ACCRUALS", "medium", f"Utili superiori al cassa generata ({acc:.0%} dell'attivo): qualità degli utili bassa"))
+            f.append(_flag("HIGH_ACCRUALS", "medium", f"Utili superiori al cassa generata ({fpct(acc, 0)} dell'attivo): qualità degli utili bassa"))
         sbc = v("sbc_to_revenue")
         if sbc is not None and sbc > 0.10:
-            f.append(_flag("HIGH_SBC", "medium", f"Compensi in azioni pari al {sbc:.0%} dei ricavi: costo reale per gli azionisti"))
+            f.append(_flag("HIGH_SBC", "medium", f"Compensi in azioni pari al {fpct(sbc, 0)} dei ricavi: costo reale per gli azionisti"))
         gw = v("goodwill_to_assets")
         if gw is not None and gw > 0.5:
-            f.append(_flag("HIGH_GOODWILL", "info", f"Avviamento e intangibili = {gw:.0%} dell'attivo: crescita per acquisizioni, rischio svalutazioni"))
+            f.append(_flag("HIGH_GOODWILL", "info", f"Avviamento e intangibili = {fpct(gw, 0)} dell'attivo: crescita per acquisizioni, rischio svalutazioni"))
         debt = fin.series("total_debt")
         if len(debt) >= 2 and debt.iloc[-2] > 0 and debt.iloc[-1] / debt.iloc[-2] > 1.5 and (nde or 0) > 2:
-            f.append(_flag("DEBT_SURGE", "medium", f"Debito aumentato del {debt.iloc[-1] / debt.iloc[-2] - 1:.0%} nell'ultimo anno"))
+            f.append(_flag("DEBT_SURGE", "medium", f"Debito aumentato del {fpct(debt.iloc[-1] / debt.iloc[-2] - 1, 0)} nell'ultimo anno"))
         om, omv = v("operating_margin"), v("op_margin_volatility")
         om10 = v("op_margin_10y_median") if v("op_margin_10y_median") is not None else v("op_margin_5y_median")
         if om is not None and om10 is not None and om10 > 0 and om > 1.5 * om10 and om - om10 > 0.03 and \
                 ((omv is not None and omv > 0.04) or sector in CYCLICAL_SECTORS):
             f.append(_flag("CYCLICAL_PEAK", "medium",
-                           f"Margine operativo attuale {om:.0%} contro una mediana di ciclo di {om10:.0%}: utili probabilmente "
+                           f"Margine operativo attuale {fpct(om, 0)} contro una mediana di ciclo di {fpct(om10, 0)}: utili probabilmente "
                            "vicini al picco del ciclo. P/E bassi e crescita storica possono essere ingannevoli."))
         ebit_t, ni_t = fin.ttm.get("ebit"), fin.ttm.get("net_income")
         int_t, rev_t = fin.ttm.get("interest_expense") or 0.0, fin.ttm.get("revenue")
@@ -293,13 +294,13 @@ def fundamental_flags(m: MetricSet, fin: Financials, company: dict[str, Any]) ->
                                "probabili componenti straordinarie (svalutazioni, plusvalenze, effetti fiscali). P/E da leggere con cautela."))
     rg = v("revenue_growth_last_fy")
     if rg is not None and rg < -0.10:
-        f.append(_flag("REVENUE_DECLINE", "medium", f"Ricavi in calo del {-rg:.0%} nell'ultimo anno fiscale"))
+        f.append(_flag("REVENUE_DECLINE", "medium", f"Ricavi in calo del {fpct(-rg, 0)} nell'ultimo anno fiscale"))
     dil = v("share_change_cagr_5y")
     if dil is not None:
         if dil > 0.08:
-            f.append(_flag("HEAVY_DILUTION", "high", f"Numero di azioni in crescita del {dil:.1%} l'anno (5 anni): forte diluizione"))
+            f.append(_flag("HEAVY_DILUTION", "high", f"Numero di azioni in crescita del {fpct(dil, 1)} l'anno (5 anni): forte diluizione"))
         elif dil > 0.03:
-            f.append(_flag("DILUTION", "medium", f"Numero di azioni in crescita del {dil:.1%} l'anno (5 anni): diluizione"))
+            f.append(_flag("DILUTION", "medium", f"Numero di azioni in crescita del {fpct(dil, 1)} l'anno (5 anni): diluizione"))
     pay, fpay = v("payout_ratio"), v("fcf_payout")
     if pay is not None and pay > 1 and (fpay is None or fpay > 1):
         f.append(_flag("UNCOVERED_DIVIDEND", "medium", "Dividendo superiore a utili e free cash flow: sostenibilità dubbia"))
@@ -308,10 +309,10 @@ def fundamental_flags(m: MetricSet, fin: Financials, company: dict[str, Any]) ->
         f.append(_flag("PERSISTENT_LOSSES", "medium", "Perdite nette negli ultimi due anni fiscali"))
     age = v("data_age_days")
     if age is not None and age > 450:
-        f.append(_flag("STALE_FUNDAMENTALS", "data", f"Ultimo bilancio disponibile di {age:.0f} giorni fa: dati vecchi"))
+        f.append(_flag("STALE_FUNDAMENTALS", "data", f"Ultimo bilancio disponibile di {num_it(age, 0)} giorni fa: dati vecchi"))
     yrs = v("years_of_data")
     if yrs is not None and yrs < 4:
-        f.append(_flag("SHORT_HISTORY", "data", f"Solo {yrs:.0f} anni di bilanci: metriche di crescita e stabilità poco affidabili"))
+        f.append(_flag("SHORT_HISTORY", "data", f"Solo {num_it(yrs, 0)} anni di bilanci: metriche di crescita e stabilità poco affidabili"))
     restated = [r for r in fin.fact_rows if r.get("restated") and r["item"] in ("revenue", "net_income")
                 and r["period_end"] >= str((pd.Timestamp.today() - pd.DateOffset(years=3)).date())
                 and r.get("original_value") and abs(r["value"] / r["original_value"] - 1) > 0.02]

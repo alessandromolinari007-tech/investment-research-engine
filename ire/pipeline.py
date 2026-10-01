@@ -55,6 +55,7 @@ class Pipeline:
         self.extra += [r["ticker"] for r in self.con.execute("SELECT ticker FROM user_portfolio")]
         self.run_id: int | None = None
         self.status: str | None = None
+        self._market_rows: list[tuple] = []
         self.t0 = time.time()
         self.fins: dict[str, Financials] = {}
         self.infos: dict[str, dict[str, Any]] = {}
@@ -104,6 +105,11 @@ class Pipeline:
             issues = self._health()
             self.stats["health"] = issues
             self.status = "degraded" if issues else "completed"
+            if self.status == "completed":
+                self.con.executemany(
+                    "INSERT OR REPLACE INTO market_data (company_id, ticker, as_of, price, price_currency, market_cap_yahoo, "
+                    "shares_yahoo, forward_eps, trailing_eps_yahoo, dividend_rate, beta_yahoo, peg_yahoo, quote_type, "
+                    "raw_json, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", self._market_rows)
             self.con.execute("UPDATE runs SET status=?, finished_at=?, summary=? WHERE run_id=?",
                              (self.status, now_iso(), json.dumps(self.stats, default=str), self.run_id))
             self.con.commit()
@@ -160,6 +166,15 @@ class Pipeline:
                 self.say(f"   FRED {series} non disponibile: {e}", "warning")
         self.con.commit()
         self.fx = self._load_fx()
+        if "fx_stale" not in self.stats:
+            # also when the ECB download failed: judge the rates actually available in the database
+            r = self.con.execute("SELECT MAX(date) AS d FROM fx WHERE source NOT LIKE 'Yahoo%'").fetchone()
+            last = r["d"] if r else None
+            age = (pd.Timestamp.today().normalize() - pd.Timestamp(last)).days if last else None
+            if age is None or age > 7:
+                self.stats["fx_stale"] = ("cambi BCE non disponibili" if last is None else
+                                          f"cambi BCE fermi al {last} ({age} giorni fa): BCE non raggiungibile")
+                self.say("   ATTENZIONE: " + self.stats["fx_stale"], "warning")
 
     def _load_fx(self) -> FxTable:
         df = pd.read_sql_query("SELECT date, currency, per_eur, source FROM fx", self.con)
@@ -332,6 +347,7 @@ class Pipeline:
             filer = "domestic"
         splits = self.prices.splits(c.ticker) if filer == "domestic" else []
         fin = normalize_companyfacts(c.company_id, cf, splits=splits, apply_splits=(filer == "domestic"),
+                                     known_splits=self.prices.splits(c.ticker),
                                      fetched_at=datetime.fromtimestamp(fetched, timezone.utc).isoformat() if fetched else None)
         tier = "A"
         if fin.annual.empty:
@@ -464,10 +480,9 @@ class Pipeline:
                 md["rdcf"] = a.rdcf.as_dict() if a.rdcf else None
                 md["hist_multiples"] = (a.hist_multiples.reset_index().assign(date=lambda d: d["date"].astype(str))
                                         .to_dict("records") if a.hist_multiples is not None and not a.hist_multiples.empty else [])
-                self.con.execute(
-                    "INSERT OR REPLACE INTO market_data (company_id, ticker, as_of, price, price_currency, market_cap_yahoo, "
-                    "shares_yahoo, forward_eps, trailing_eps_yahoo, dividend_rate, beta_yahoo, peg_yahoo, quote_type, raw_json, fetched_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                # written only when the run completes (market_data is per company, not per run: a degraded run
+                # must not overwrite what the UI shows next to the last completed run)
+                self._market_rows.append(
                     (cid, t, str(df.index.max().date()) if df is not None else None, price, c.get("price_currency"),
                      info.get("marketCap"), info.get("impliedSharesOutstanding") or info.get("sharesOutstanding"),
                      info.get("forwardEps"), info.get("trailingEps"), info.get("dividendRate"), info.get("beta"),
@@ -509,6 +524,7 @@ class Pipeline:
         ok = ~(stale | nomc)
         scored = (scoring.score_universe(df[ok], weights, int(self.cfg.get("scoring.min_peer_group", 8)))
                   if ok.any() else df.iloc[0:0].copy())
+        scored["in_pool"] = True
         if (~ok).any():
             rest = df[~ok].copy()
             rest["profile"] = rest.apply(scoring.profile_of, axis=1)
@@ -516,6 +532,7 @@ class Pipeline:
             rest["peer_used"] = rest["peer_group"]
             rest["detail_obj"] = [{"metrics": {}, "fallbacks": []} for _ in range(len(rest))]
             rest["coverage"] = 0.0
+            rest["in_pool"] = False
             scored = pd.concat([scored, rest]).loc[df.index]
         for col in ("composite", "robust_score", "quality", "valuation", "growth", "financial_strength", "capital_allocation"):
             scored.loc[stale | nomc, col] = np.nan
@@ -540,17 +557,22 @@ class Pipeline:
         peer_cols = ["pe", "pb", "ev_ebit", "fcf_sbc_yield", "ev_sales", "dividend_yield", "earnings_yield_equity",
                      "roic_5y_median", "gross_margin", "operating_margin", "net_debt_ebitda", "revenue_cagr_5y"]
         medians = {}
+        pool_rows = scored[scored["in_pool"].fillna(False).astype(bool)] if "in_pool" in scored.columns else scored
         for g in scored["peer_used"].dropna().unique():
             # the SAME population used for the percentiles: a pooled label means all financials or the whole
             # non-financial universe, not just the left-over companies of small sectors
             if g == scoring.FIN_POOL:
-                sub = scored[scored["profile"] == "bank"]
+                sub = pool_rows[pool_rows["profile"] == "bank"]
             elif str(g).startswith(scoring.ALL_POOL.split("(")[0].strip()):
-                sub = scored[scored["profile"] != "bank"]
+                sub = pool_rows[pool_rows["profile"] != "bank"]
             else:
-                sub = scored[scored["peer_group"] == g]
+                sub = pool_rows[pool_rows["peer_group"] == g]
             medians[g] = {c: float(pd.to_numeric(sub[c], errors="coerce").median())
                           for c in peer_cols if c in sub.columns and pd.to_numeric(sub[c], errors="coerce").notna().sum() >= 3}
+        # REITs: the REIT-only metrics are ranked among REITs, so their medians come from REITs too
+        reits = pool_rows[pool_rows["profile"] == "reit"] if "profile" in pool_rows.columns else pool_rows.iloc[0:0]
+        reit_med = {c: float(pd.to_numeric(reits[c], errors="coerce").median()) for c in scoring.REIT_ONLY_POOL
+                    if c in reits.columns and pd.to_numeric(reits[c], errors="coerce").notna().sum() >= scoring.MIN_OBS}
         rows = []
         for idx in idxs:
             r = scored.loc[idx]
@@ -571,12 +593,15 @@ class Pipeline:
             a = self.analyses.get(cid)
             metrics = {k: mv.value for k, mv in a.metrics.items()} if a else {}
             r2 = scored.loc[idx]
-            thesis = build_thesis(r2, r2["detail_obj"], metrics, flags, medians.get(r2["peer_used"], {}),
+            pm = dict(medians.get(r2["peer_used"], {}))
+            if r2.get("profile") == "reit":
+                pm.update(reit_med)
+            thesis = build_thesis(r2, r2["detail_obj"], metrics, flags, pm,
                                   a.rdcf.as_dict() if a and a.rdcf else None, fin_cur)
             detail = {"percentiles": r2["detail_obj"], "signals": [s.__dict__ for s in signals], "thesis": thesis,
                       "deep_analysis": cid in self.deep_done,
                       "valuation_peers": _nz(r2.get("valuation_peers")),
-                      "peer_medians": medians.get(r2["peer_used"], {}),
+                      "peer_medians": pm,
                       "scheme_scores": {k.replace("score_", ""): (None if pd.isna(r2[k]) else float(r2[k]))
                                         for k in r2.index if str(k).startswith("score_")}}
             rows.append({

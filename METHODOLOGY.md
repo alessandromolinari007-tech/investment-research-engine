@@ -79,8 +79,9 @@ solo se rispettano la soglia di liquidità.
   leasing sottratti dal free cash flow; per i filer US GAAP lo stesso vale per i **leasing finanziari** (il cui costo,
   come per IFRS 16, è sotto l'EBITDA), salvo che il concetto di debito li includa già. I leasing operativi US GAAP
   restano esclusi (il loro costo è già nell'EBITDA).
-- **Split**: rilevati anche i rapporti 3:2, 5:4, 4:3, 5:2; se il numero di azioni salta in modo compatibile con uno
-  split non rettificato, le metriche per azione e la diluizione non vengono calcolate.
+- **Split**: se il numero di azioni salta in modo compatibile con uno split non rettificato (×2, ×3, ×4…; i rapporti
+  3:2, 5:4, 4:3, 5:2 solo se uno split con quel rapporto è registrato da Yahoo nello stesso anno, altrimenti sono
+  normale diluizione), le metriche per azione e la diluizione non vengono calcolate.
 - **Azioni privilegiate** escluse dal patrimonio degli azionisti ordinari (P/B, ROE).
 
 ## 4. Prezzi, valute e capitalizzazione
@@ -195,7 +196,8 @@ non contati: multipli bassi su utili di picco non indicano economicità.
 I segnali 1 e 4 guardano entrambi il prezzo rispetto agli utili attuali: per la confidenza contano come **una sola
 evidenza**. **Confidenza del verdetto**: *alta* con almeno 3 evidenze indipendenti, almeno il 75% del peso a favore
 e nessun segnale opposto; *media* con almeno 2 evidenze e almeno il 50% a favore senza opposti; altrimenti *bassa*.
-Nell'interfaccia la "confidenza del verdetto" è distinta dall'"affidabilità dei dati" del punteggio.
+Nell'interfaccia la "confidenza del verdetto" è distinta dall'"affidabilità del punteggio" (che dipende da copertura
+e qualità dei dati, anni di storia, segnalazioni sui dati e stabilità della classifica al variare dei pesi).
 
 **Reverse DCF** — risponde a: *quale crescita del free cash flow giustifica il prezzo attuale?*
 
@@ -230,7 +232,7 @@ Nell'interfaccia la "confidenza del verdetto" è distinta dall'"affidabilità de
 
 Non è una selezione dei primi N e non è un'ottimizzazione media-varianza (troppo sensibile agli errori di stima).
 
-1. **Candidati**: punteggio robusto ≥ 70° percentile (predefinito), affidabilità dei dati non bassa, nessuna classe
+1. **Candidati**: punteggio robusto ≥ 70° percentile (predefinito), affidabilità del punteggio non bassa, nessuna classe
    tra Red flag, Possibile value trap, Qualità in deterioramento, Dati insufficienti, nessun verdetto "costosa" con
    confidenza media o alta; almeno 130 settimane di prezzi negli ultimi 3 anni (predefinito). Se i candidati non bastano la soglia scende a 60 e poi a 50, e il log lo dice.
 2. **Selezione greedy**: si aggiunge il miglior punteggio corretto per la correlazione media con i titoli già scelti;
@@ -241,7 +243,8 @@ Non è una selezione dei primi N e non è un'ottimizzazione media-varianza (trop
    ≤ 25%, aree (Nord America ≤ 65%, Europa ≤ 45%, Regno Unito, Giappone, Asia-Pacifico ≤ 20%, Altro ≤ 10%).
 4. **Vincoli dichiarati**: ogni vincolo è mostrato come configurato vs effettivo. Se non è rispettabile (troppo pochi
    candidati diversificati) un programma lineare trova l'**allentamento minimo** dei soli vincoli che lo richiedono
-   (alzare il limite di un singolo titolo "costa" il triplo di un limite di settore o area), e il vincolo è
+   (il limite per titolo, se va alzato, vale per tutti i titoli, e alzarlo "costa" più che alzare un limite di
+   settore o area), e il vincolo è
    **riportato come NON rispettato**, mai violato in silenzio.
 5. **Sotto 12 titoli** (predefinito) il portafoglio è **"non proposto"**; se i limiti sono superati di molto (oltre 4
    punti per titolo o 10 punti per settore/area) è **"concentrato"**: in entrambi i casi è solo un elenco di candidati.

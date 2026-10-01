@@ -8,7 +8,7 @@ Specifica originale completa: file `attachment.txt` caricato dall'utente nella p
 
 ## 2. Stato attuale (aggiornato al 2026-10-01)
 Repository: https://github.com/alessandromolinari007-tech/investment-research-engine (ramo `main`). Visibilità del repo: da verificare.
-Test offline: `python -m pytest -q` → 120 passed (Python 3.11, sandbox cloud). `pytest.ini` limita la raccolta a `tests/`.
+Test offline: `python -m pytest -q` → 125 passed (Python 3.11, sandbox cloud). `pytest.ini` limita la raccolta a `tests/`.
 UI: `scripts/dev_offline_run.py` + `scripts/dev_ui_test.py` → 7 pagine su 7 senza eccezioni (DB sintetico).
 Test end-to-end con dati REALI: MAI eseguito. Python 3.12 autorizzato dall'utente (lo installa lui con winget); l'utente lancia `first_run_test.bat` e riporta `logs\first_run.log`.
 
@@ -112,7 +112,7 @@ Aperti / limitazioni dichiarate (in METHODOLOGY.md §13):
 - Le tabelle `companies` e `facts` sono globali: una run fallita può modificare esclusioni e fatti mostrati accanto ai punteggi dell'ultima run completa.
 - Formati numerici: le colonne `st.column_config` usano il formato di Streamlit (punto decimale).
 - Progetto sotto OneDrive = rischio per SQLite (non verificato).
-Esito della riverifica (subagenti): da aggiornare quando arriva.
+Riverifica (2 subagenti indipendenti): confermate quasi tutte le correzioni; 17 rilievi residui (cambi Yahoo mai riscaricati, split frazionari che nascondevano la diluizione, 403 SEC classificato come User-Agent, storico misto se il riscaricamento fallisce, leasing per anno, allentamento tutto su un titolo, mediane, decimali italiani, ecc.) corretti nel commit "Red team 2 (parte 4)".
 
 ## 8. Prossimi passi (in ordine)
 1. Chiudere i rilievi della riverifica del red team 2 (se presenti) con test; pytest + dev_offline_run + dev_ui_test verdi; commit e push.

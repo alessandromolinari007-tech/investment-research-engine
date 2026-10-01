@@ -143,6 +143,8 @@ def test_failed_full_redownload_keeps_history(store, monkeypatch):
     monkeypatch.setattr(P.yahoo, "download_prices", flaky)
     out = s.get_full(["AAA"])
     assert out["AAA"].index.min() <= pd.Timestamp("2014-01-03")      # nothing lost when Yahoo returns nothing
+    r = out["AAA"]["adj_close"].pct_change().dropna()
+    assert r.abs().max() < 0.01                                       # no jump between old and new basis
 
 
 def test_today_bar_is_not_stored(store):
@@ -294,3 +296,33 @@ def test_yahoo_pair_does_not_make_ecb_currencies_stale():
     fx = FxTable(pd.DataFrame(rows))
     assert fx.has("USD") and fx.has("TWD")
     assert fx.convert(110.0, "USD", "EUR") == pytest.approx(100.0)
+
+
+def test_yahoo_currency_older_than_ecb_is_stale():
+    rows = [{"date": d.strftime("%Y-%m-%d"), "currency": "USD", "per_eur": 1.1, "source": "ECB"}
+            for d in pd.bdate_range("2026-01-05", "2026-09-30")]
+    rows += [{"date": d.strftime("%Y-%m-%d"), "currency": "TWD", "per_eur": 35.0, "source": "Yahoo Finance EURTWD=X"}
+             for d in pd.bdate_range("2026-01-05", "2026-05-29")]
+    fx = FxTable(pd.DataFrame(rows))
+    assert fx.has("USD") and not fx.has("TWD")          # → stage_fx_extra downloads it again
+    assert fx.rate("TWD") is None
+
+
+def test_sec_rate_limit_page_is_not_a_user_agent_error(tmp_path, monkeypatch):
+    """Verifier: SEC's rate-limit page also mentions 'undeclared automated tools' and the user agent."""
+    import ire.http as H
+
+    c = H.HttpClient(user_agent="Nome Cognome nome@example.com", cache_dir=tmp_path)
+
+    class R:
+        status_code = 403
+        text = ("<title>SEC.gov | Request Rate Threshold Exceeded</title> Your request originates from an undeclared "
+                "automated tool. Please declare your traffic by updating your user agent.")
+        headers = {}
+
+    monkeypatch.setattr(c.session, "get", lambda *a, **k: R())
+    monkeypatch.setattr(H.time, "sleep", lambda s: None)
+    monkeypatch.setattr(c, "_cooldown_until", {})
+    with pytest.raises(H.SourceUnavailable) as e:
+        c.get("https://data.sec.gov/api/xbrl/companyfacts/CIK0000000001.json", max_retries=2)
+    assert "limite di richieste" in str(e.value) and "User-Agent" not in str(e.value)

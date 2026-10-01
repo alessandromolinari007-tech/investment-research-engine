@@ -276,7 +276,7 @@ def _df_to_records(df: pd.DataFrame | None) -> dict[str, dict[str, float]]:
 
 def statements(ticker: str, ttl_days: float = 7) -> dict[str, Any] | None:
     cached = _read_cache("statements", ticker, ttl_days * 86400)
-    if cached is not None:
+    if cached is not None and (not cached.get("_partial") or time.time() - cached.get("_fetched_at", 0) < 86400):
         return cached.get("statements")
 
     def _get():
@@ -299,7 +299,10 @@ def statements(ticker: str, ttl_days: float = 7) -> dict[str, Any] | None:
     # yfinance swallows rate-limit errors per statement: a result with only some of the three annual statements
     # is used for this run but NOT cached, so it is downloaded again next time
     if all(st.get(k) for k in ("income_annual", "balance_annual", "cashflow_annual")):
-        _write_cache("statements", ticker, {"statements": st})
+        # quarterly statements all empty: possibly a rate limit later in the same call, or a company that does
+        # not publish quarterly data → cached only for a day
+        partial = not any(st.get(k) for k in ("income_quarterly", "balance_quarterly", "cashflow_quarterly"))
+        _write_cache("statements", ticker, {"statements": st, "_partial": partial})
     return st
 
 

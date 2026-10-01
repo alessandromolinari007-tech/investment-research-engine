@@ -31,6 +31,7 @@ import pandas as pd
 
 from .classify import SECTOR_IT
 from .scoring import C_NODATA, C_QDET, C_REDFLAG, C_TRAP, QUALITY_DISCOUNT
+from .glossary import num_it, pct
 
 MIN_WEEKS_RISK = 52        # weekly returns needed (last 3 years) to estimate a holding's risk
 EXCLUDED_CLASSES = {C_REDFLAG, C_TRAP, C_NODATA, C_QDET}
@@ -92,7 +93,7 @@ def robust_cov(R: pd.DataFrame, min_rows: int = 52) -> tuple[pd.DataFrame, str]:
     C = vecs @ np.diag(np.clip(vals, 1e-10, None)) @ vecs.T
     return (pd.DataFrame(C * 52, index=R.columns, columns=R.columns),
             f"covarianza a coppie (solo {len(common)} settimane in comune; coppie senza storico comune: correlazione "
-            f"media {fill:.2f})")
+            f"media {num_it(fill, 2)})")
 
 
 def _eligible(scores: pd.DataFrame, weekly: pd.DataFrame, min_pct: float, min_weeks: int, cfg,
@@ -153,7 +154,7 @@ def _select(info: pd.DataFrame, corr: pd.DataFrame, target: int, max_corr: float
                     rejected[cid] = "correlazione non stimabile con i titoli già scelti (storico insufficiente)"
                     continue
                 if cs.max() > max_corr:
-                    rejected[cid] = f"correlazione {cs.max():.2f} con {info.loc[cs.idxmax(), 'ticker']}"
+                    rejected[cid] = f"correlazione {num_it(cs.max(), 2)} con {info.loc[cs.idxmax(), 'ticker']}"
                     continue
                 avg = float(cs.mean())
             adj = float(r["robust_score"]) - lam * 100 * max(0.0, avg - 0.2) + (bonus if cid in held else 0.0)
@@ -210,11 +211,11 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
         selected = _select(info, corr, n_target, max_corr, lam, sector_max_n, region_max_n, held, bonus, rejected)
         used_pct = min_pct
         log.extend(sub_log)
-        log.append(f"Soglia percentile {min_pct:.0f}: {len(info)} candidati con storico prezzi sufficiente → {len(selected)} scelti")
+        log.append(f"Soglia percentile {num_it(min_pct, 0)}: {len(info)} candidati con storico prezzi sufficiente → {len(selected)} scelti")
         if len(selected) >= min_pos:
             break
     if used_pct < min_pct0:
-        log.append(f"ATTENZIONE: soglia di percentile del punteggio robusto abbassata da {min_pct0:.0f} a {used_pct:.0f} "
+        log.append(f"ATTENZIONE: soglia di percentile del punteggio robusto abbassata da {num_it(min_pct0, 0)} a {num_it(used_pct, 0)} "
                    "per raggiungere un numero minimo di titoli diversificati")
     if not selected:
         return {"positions": [], "status": "non proposto", "log": log + ["Nessun candidato idoneo."], "analytics": {}}
@@ -236,26 +237,28 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
     sectors = info.loc[selected, "_sector"]
     regions = info.loc[selected, "_region"]
     w, report = enforce_caps(w, sectors, regions, min_w, max_w, max_sector, region_caps, log)
-    # caps broken by a wide margin: the result is a concentrated list, not a diversified proposal
-    far = [c for c in report if not c["rispettato"] and c["vincolo"] != "peso minimo per titolo"
-           and c["effettivo"] - c["configurato"] > (0.04 if c["vincolo"] == "peso massimo per titolo" else 0.10)]
-    if status == "proposto" and far:
-        status = "concentrato"
-        log.append("Portafoglio CONCENTRATO: " + "; ".join(f"{c['vincolo']} {c['effettivo']:.0%} (configurato "
-                                                          f"{c['configurato']:.0%})" for c in far)
-                   + ". Non è una proposta diversificata: allargare l'universo (modalità standard/full).")
     # no-trade band: small changes to existing holdings are not worth the costs → keep previous weight
     if previous:
         # names whose new weight is within the band KEEP their previous weight exactly (no tiny orders);
         # only the other names absorb the difference
         keep = {cid: float(previous[cid]) for cid in w.index if cid in previous and abs(w[cid] - previous[cid]) < band}
         if keep:
-            w, report = enforce_caps(w, sectors, regions, min_w, max_w, max_sector, region_caps, [], fixed=keep)
+            log = [line for line in log if not line.startswith("VINCOLO NON RISPETTATO")]   # re-reported below
+            w, report = enforce_caps(w, sectors, regions, min_w, max_w, max_sector, region_caps, log, fixed=keep)
+    # caps broken by a wide margin (after the band step): a concentrated list, not a diversified proposal
+    far = [c for c in report if not c["rispettato"] and c["vincolo"] != "peso minimo per titolo"
+           and c["effettivo"] - c["configurato"] > (0.04 if c["vincolo"] == "peso massimo per titolo" else 0.10) + 1e-6]
+    if status == "proposto" and far:
+        status = "concentrato"
+        log.append("Portafoglio CONCENTRATO: " + "; ".join(f"{c['vincolo']} {pct(c['effettivo'], 0)} (configurato "
+                                                          f"{pct(c['configurato'], 0)})" for c in far)
+                   + ". Non è una proposta diversificata: allargare l'universo (modalità standard/full).")
+    log = list(dict.fromkeys(log))           # the same note can be produced at every percentile threshold
     turnover = None
     if previous:
         allk = set(previous) | set(w.index)
         turnover = 0.5 * sum(abs(float(w.get(k, 0.0)) - float(previous.get(k, 0.0))) for k in allk)
-        log.append(f"Rotazione rispetto al portafoglio precedente: {turnover:.0%} del capitale "
+        log.append(f"Rotazione rispetto al portafoglio precedente: {pct(turnover, 0)} del capitale "
                    f"({len(set(w.index) - set(previous))} nuovi, {len(set(previous) - set(w.index))} usciti)")
 
     positions = []
@@ -265,8 +268,8 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
         role, why_role = assign_role(r, float(vol[cid]), avg_corr[cid])
         top_p = sorted([(p, r.get(p)) for p in ("quality", "valuation", "growth", "financial_strength")
                         if pd.notna(r.get(p))], key=lambda x: -x[1])[:2]
-        reason = (f"{r.get('classification')}. Punti forti vs pari: " + ", ".join(f"{PILLAR_SHORT[p]} {v:.0f}/100" for p, v in top_p)
-                  + f". Correlazione media con gli altri titoli {avg_corr[cid]:.2f}, volatilità 3 anni {vol[cid]:.0%}.")
+        reason = (f"{r.get('classification')}. Punti forti vs pari: " + ", ".join(f"{PILLAR_SHORT[p]} {num_it(v, 0)}/100" for p, v in top_p)
+                  + f". Correlazione media con gli altri titoli {num_it(avg_corr[cid], 2)}, volatilità 3 anni {pct(vol[cid], 0)}.")
         if not bool(r.get("deep_analysis", False)):
             reason += " ⚠ Analisi del testo dei report annuali NON disponibile per questa società."
         positions.append({
@@ -305,35 +308,37 @@ def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: fl
     S_m = np.array([(sectors == s_).values for s_ in secs], dtype=float)
     R_m = np.array([(regions == r_).values for r_ in regs], dtype=float)
 
-    # ---- phase 1: minimal relaxation (variables: x[n], name slack[n], sector slack[k], region slack[m])
+    # ---- phase 1: minimal relaxation (variables: x[n], ONE shared per-name slack, sector slack[k], region slack[m]).
+    # The per-name slack is shared: raising "max per name" applies to every name, so the weights can spread
+    # evenly (8.33% each) instead of piling the whole relaxation on one arbitrary name.
     k, m = len(secs), len(regs)
-    nv = 2 * n + k + m
-    c = np.concatenate([np.zeros(n), np.full(n, 3.0), np.ones(k), np.ones(m)])
+    nv = n + 1 + k + m
+    c = np.concatenate([np.zeros(n), [3.0 * n], np.ones(k), np.ones(m)])
     A, bnd = [], []
-    for i in range(n):                                  # x_i − s_i ≤ max_w
+    for i in range(n):                                  # x_i − s ≤ max_w
         row = np.zeros(nv)
-        row[i], row[n + i] = 1, -1
+        row[i], row[n] = 1, -1
         A.append(row)
         bnd.append(max_w)
     for j in range(k):                                  # Σ_sector x − t_j ≤ max_sector
         row = np.zeros(nv)
-        row[:n], row[2 * n + j] = S_m[j], -1
+        row[:n], row[n + 1 + j] = S_m[j], -1
         A.append(row)
         bnd.append(max_sector)
     for j, r_ in enumerate(regs):                       # Σ_region x − u_j ≤ cap
         row = np.zeros(nv)
-        row[:n], row[2 * n + k + j] = R_m[j], -1
+        row[:n], row[n + 1 + k + j] = R_m[j], -1
         A.append(row)
         bnd.append(r_caps[r_])
     Aeq = np.zeros((1, nv))
     Aeq[0, :n] = 1
-    bounds = [(lo, 1.0)] * n + [(0, 1.0)] * (n + k + m)
+    bounds = [(lo, 1.0)] * n + [(0, 1.0)] * (1 + k + m)
     lp = linprog(c, A_ub=np.array(A), b_ub=np.array(bnd), A_eq=Aeq, b_eq=[1.0], bounds=bounds, method="highs")
-    slack = lp.x[n:] if lp.success else np.zeros(n + k + m)
+    slack = lp.x[n:] if lp.success else np.zeros(1 + k + m)
     tol = 1e-7
-    hi_i = max_w + np.where(slack[:n] > tol, slack[:n], 0.0)
-    s_caps = max_sector + np.where(slack[n:n + k] > tol, slack[n:n + k], 0.0)
-    rg_caps = np.array([r_caps[r_] for r_ in regs]) + np.where(slack[n + k:] > tol, slack[n + k:], 0.0)
+    hi_i = np.full(n, max_w + (slack[0] if slack[0] > tol else 0.0))
+    s_caps = max_sector + np.where(slack[1:1 + k] > tol, slack[1:1 + k], 0.0)
+    rg_caps = np.array([r_caps[r_] for r_ in regs]) + np.where(slack[1 + k:] > tol, slack[1 + k:], 0.0)
 
     # ---- phase 2: weights closest to the target within the (minimally relaxed) caps
     w0 = w.values.astype(float)
@@ -357,6 +362,9 @@ def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: fl
         res = solve(fb)
         if not res.success:
             res = None
+            if log is not None:
+                log.append("Banda di non intervento non applicabile (i pesi precedenti non rispettano i vincoli): "
+                           "pesi ricalcolati per tutti i titoli")
     if res is None:
         res = solve(base_bounds)
     if res.success:
@@ -385,8 +393,8 @@ def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: fl
     if log is not None:
         for c_ in report:
             if not c_["rispettato"]:
-                log.append(f"VINCOLO NON RISPETTATO: {c_['vincolo']} = {c_['effettivo']:.1%} (configurato "
-                           f"{c_['configurato']:.1%}) — troppo pochi candidati diversificati per rispettarlo")
+                log.append(f"VINCOLO NON RISPETTATO: {c_['vincolo']} = {pct(c_['effettivo'], 1)} (configurato "
+                           f"{pct(c_['configurato'], 1)}) — troppo pochi candidati diversificati per rispettarlo")
     return out, report
 
 
@@ -408,29 +416,29 @@ def assign_role(r: pd.Series, vol3y: float, avg_corr: float) -> tuple[str, str]:
         return ("Opportunità da verificare",
                 "Qualità alta e multipli più bassi dei pari: può rivalutarsi SE i fondamentali tengono (non è garantito).")
     if pd.notna(q) and q >= 80 and (pd.isna(g) or g >= 50):
-        return "Compounder di qualità", f"Qualità {q:.0f}/100 e crescita {g:.0f}/100 vs pari: motore di lungo periodo." if pd.notna(g) \
-            else f"Qualità {q:.0f}/100 vs pari: motore di lungo periodo."
+        return "Compounder di qualità", f"Qualità {num_it(q, 0)}/100 e crescita {num_it(g, 0)}/100 vs pari: motore di lungo periodo." if pd.notna(g) \
+            else f"Qualità {num_it(q, 0)}/100 vs pari: motore di lungo periodo."
     if pd.notna(g) and g >= 80:
-        return "Crescita", f"Crescita {g:.0f}/100 vs pari: aumenta il potenziale ma anche la volatilità ({vol3y:.0%})."
+        return "Crescita", f"Crescita {num_it(g, 0)}/100 vs pari: aumenta il potenziale ma anche la volatilità ({pct(vol3y, 0)})."
     if vol3y < 0.20 and beta_ok and beta < 0.8:
-        return "Difensivo", f"Volatilità 3 anni {vol3y:.0%} e beta {beta:.2f}: tende ad attenuare le discese del mercato."
+        return "Difensivo", f"Volatilità 3 anni {pct(vol3y, 0)} e beta {num_it(beta, 2)}: tende ad attenuare le discese del mercato."
     pay, fpay = r.get("payout_ratio"), r.get("fcf_payout")
     covered = (pay is not None and pd.notna(pay) and pay < 0.8) and (fpay is None or pd.isna(fpay) or fpay < 1.0)
     if dy is not None and pd.notna(dy) and dy >= 0.03:
         if covered and "UNCOVERED_DIVIDEND" not in flags:
-            return "Rendita", f"Dividendo {dy:.1%}, pagato con il {pay:.0%} degli utili: flussi di cassa regolari."
-        return "Rendita (da verificare)", f"Dividendo {dy:.1%}, ma copertura con utili/FCF non dimostrata."
+            return "Rendita", f"Dividendo {pct(dy, 1)}, pagato con il {pct(pay, 0)} degli utili: flussi di cassa regolari."
+        return "Rendita (da verificare)", f"Dividendo {pct(dy, 1)}, ma copertura con utili/FCF non dimostrata."
     if avg_corr < 0.3:
-        return "Diversificatore", f"Correlazione media {avg_corr:.2f} con gli altri titoli: si muove in modo diverso."
+        return "Diversificatore", f"Correlazione media {num_it(avg_corr, 2)} con gli altri titoli: si muove in modo diverso."
     return "Core", "Posizione equilibrata su più fattori."
 
 
 def _risk_note(r: pd.Series) -> str:
     parts = []
     if pd.notna(r.get("vol_1y")):
-        parts.append(f"volatilità 1 anno {r['vol_1y']:.0%}")
+        parts.append(f"volatilità 1 anno {pct(r['vol_1y'], 0)}")
     if pd.notna(r.get("max_drawdown_5y")):
-        parts.append(f"perdita massima 5 anni {r['max_drawdown_5y']:.0%}")
+        parts.append(f"perdita massima 5 anni {pct(r['max_drawdown_5y'], 0)}")
     if r.get("price_currency") and r.get("price_currency") != "EUR":
         parts.append(f"rischio cambio {r['price_currency']}/EUR")
     return ", ".join(parts)
@@ -539,15 +547,15 @@ def analyze_portfolio(weights: dict[str, float], weekly: pd.DataFrame, meta: pd.
     warnings = []
     top = w.sort_values(ascending=False)
     if top.iloc[0] > 0.15:
-        warnings.append(f"Posizione più grande = {top.iloc[0]:.0%}: rischio specifico concentrato")
+        warnings.append(f"Posizione più grande = {pct(top.iloc[0], 0)}: rischio specifico concentrato")
     for sec, x in out.get("sector_exposure", {}).items():
         if x > 0.35:
-            warnings.append(f"Settore {SECTOR_IT.get(sec, sec)} = {x:.0%} del portafoglio")
+            warnings.append(f"Settore {SECTOR_IT.get(sec, sec)} = {pct(x, 0)} del portafoglio")
     for cur, x in out.get("currency_exposure", {}).items():
         if cur != "EUR" and x > 0.6:
-            warnings.append(f"{x:.0%} del portafoglio in {cur}: forte esposizione al cambio contro EUR")
+            warnings.append(f"{pct(x, 0)} del portafoglio in {cur}: forte esposizione al cambio contro EUR")
     if out.get("avg_pair_correlation") and out["avg_pair_correlation"] > 0.5:
-        warnings.append(f"Correlazione media tra titoli {out['avg_pair_correlation']:.2f}: diversificazione limitata")
+        warnings.append(f"Correlazione media tra titoli {num_it(out['avg_pair_correlation'], 2)}: diversificazione limitata")
     if len(ids) < 12:
         warnings.append(f"Solo {len(ids)} titoli: il rischio specifico di ogni azienda pesa molto")
     if missing:

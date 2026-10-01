@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import charts  # noqa: E402
 import data  # noqa: E402
 from ire.classify import SECTOR_IT  # noqa: E402
-from ire.glossary import GLOSSARY, KIND_IT, explain, fmt, label, money, num_it  # noqa: E402
+from ire.glossary import GLOSSARY, KIND_IT, explain, fmt, label, money, num_it, pct  # noqa: E402
 from ire.scoring import (C_AVG, C_CHEAP, C_GROWTH, C_NODATA, C_QDET, C_QDISC, C_QFAIR, C_QFULL,  # noqa: E402
                          C_REDFLAG, C_TEMP, C_TRAP, NEGATIVE_CLASSES, PILLARS, QUALITY_DISCOUNT)
 
@@ -162,7 +162,7 @@ def page_home():
                 "quality": st.column_config.NumberColumn("Qualità", format="%.0f"),
                 "valuation": st.column_config.NumberColumn("Economicità", format="%.0f"),
                 "valuation_verdict": "Valutazione", "valuation_confidence": "Confidenza del verdetto",
-                "confidence": "Affidabilità dei dati"})
+                "confidence": "Affidabilità del punteggio"})
         if ev and ev.selection and ev.selection.rows:
             go_company(df.iloc[ev.selection.rows[0]]["company_id"])
 
@@ -236,7 +236,7 @@ def page_company():
             st.markdown(f"- {icon} *{s['name']}*: {esc(s['detail'])}")
         vp = det.get("valuation_peers")
         if vp is not None:
-            st.caption(f"Economicità rispetto ai pari considerando SOLO i multipli: {vp:.0f}/100 "
+            st.caption(f"Economicità rispetto ai pari considerando SOLO i multipli: {num_it(vp, 0)}/100 "
                        "(il punteggio 'Valutazione' include anche storia e crescita implicita).")
     with k2:
         if th.get("pillars"):
@@ -415,7 +415,7 @@ def page_company():
             rdiff = qd.get("risk_diff")
             if rdiff:
                 st.markdown(f"**Fattori di rischio: {rdiff['new_count']} frasi nuove e {rdiff['removed_count']} rimosse** rispetto al "
-                            f"report precedente ({rdiff['new_share']:.0%} del testo è nuovo). Le più lunghe tra le nuove:")
+                            f"report precedente ({pct(rdiff['new_share'], 0)} del testo è nuovo). Le più lunghe tra le nuove:")
                 for sentence in rdiff.get("new_examples", [])[:6]:
                     st.caption(esc(f"➕ {sentence}"))
             for n in qd.get("notes", []):
@@ -470,7 +470,7 @@ def _dcf_scenario(rd: dict, mv, cur: str | None, dr: float, gt: float, yrs: int)
     from ire.valuation import dcf_value, implied_growth
 
     g, status = implied_growth(mv("market_cap"), rd["fcf_base"], dr, gt, yrs)
-    st.metric("Crescita annua del FCF implicita nel prezzo", f"{g:.1%}" if g is not None else "n/d", help=status)
+    st.metric("Crescita annua del FCF implicita nel prezzo", f"{pct(g, 1)}" if g is not None else "n/d", help=status)
     hist = [(label(k), mv(k)) for k in ("fcf_cagr_5y", "revenue_cagr_5y", "revenue_cagr_10y")
             if mv(k) is not None and pd.notna(mv(k))]
     if hist:
@@ -480,15 +480,15 @@ def _dcf_scenario(rd: dict, mv, cur: str | None, dr: float, gt: float, yrs: int)
                    help="Parte dalla crescita implicita nel prezzo (arrotondata a 0,5 punti): spostala per vedere "
                         "come cambia il valore.") / 100
     val = dcf_value(rd["fcf_base"], ug, dr, gt, yrs)
-    moved = g is None or abs(ug - g) >= 0.005
+    moved = g is None or abs(ug * 100 - default) > 1e-9        # the user moved the slider from its start
     if val is not None and np.isfinite(val) and not moved:
         st.caption("Con l'ipotesi uguale alla crescita implicita il valore coincide con la capitalizzazione: sposta il "
                    "cursore per esplorare altri scenari.")
     elif val is not None and np.isfinite(val):
-        st.markdown(esc(f"Con crescita {ug:.0%} per {yrs} anni il valore stimato è **{money(val, cur)}** contro una "
-                        f"capitalizzazione di **{money(mv('market_cap'), cur)}** (**{val / mv('market_cap') - 1:+.0%}**)."))
+        st.markdown(esc(f"Con crescita {pct(ug, 1)} per {yrs} anni il valore stimato è **{money(val, cur)}** contro una "
+                        f"capitalizzazione di **{money(mv('market_cap'), cur)}** (**{pct(val / mv('market_cap') - 1, 0, sign=True)}**)."))
     st.caption(esc(f"FCF di partenza: {money(rd['fcf_base'], cur)} ({rd['fcf_base_method']}). Tasso risk-free: "
-                   f"{rd['risk_free']:.2%} ({rd['risk_free_source']}) + premio al rischio {rd['erp']:.1%} (assunzione). "
+                   f"{pct(rd['risk_free'], 2)} ({rd['risk_free_source']}) + premio al rischio {pct(rd['erp'], 1)} (assunzione). "
                    "È un modello: piccole variazioni delle ipotesi cambiano molto il risultato. Usalo per capire "
                    "le aspettative, non come prezzo obiettivo."))
 
@@ -532,7 +532,7 @@ def page_compare():
         st.warning("Stai confrontando aziende di settori diversi: alcune metriche (margini, debito) non sono direttamente confrontabili.")
     head = sub[["name", "classification", "valuation_verdict", "robust_score", "quality", "growth", "financial_strength", "valuation"]].copy()
     for col in ("robust_score", "quality", "growth", "financial_strength", "valuation"):
-        head[col] = pd.to_numeric(head[col], errors="coerce").map(lambda v: "n/d" if pd.isna(v) else f"{v:.0f}/100")
+        head[col] = pd.to_numeric(head[col], errors="coerce").map(lambda v: "n/d" if pd.isna(v) else f"{num_it(v, 0)}/100")
     head = head.T.astype(str).replace({"nan": "n/d", "None": "n/d"})
     head.index = ["Nome", "Classificazione", "Valutazione", "Punteggio robusto", "Qualità", "Crescita", "Solidità", "Economicità"]
     st.dataframe(head, width="stretch")
@@ -596,7 +596,7 @@ def page_screener():
     classes = f3.multiselect("Classificazione", sorted(U["classification"].dropna().unique()))
     g1, g2, g3, g4 = st.columns(4)
     verdicts = g1.multiselect("Valutazione", sorted(U["valuation_verdict"].dropna().unique()))
-    conf = g2.multiselect("Affidabilità dei dati", ["alta", "media", "bassa"])
+    conf = g2.multiselect("Affidabilità del punteggio", ["alta", "media", "bassa"])
     tier = g3.multiselect("Qualità dati", ["A", "B"], format_func=lambda x: "A (SEC)" if x == "A" else "B (Yahoo)")
     min_mc = g4.number_input("Capitalizzazione minima (mld EUR)", 0.0, 5000.0, 0.0, 1.0)
     df = U.copy()
@@ -630,7 +630,7 @@ def page_screener():
                                      "quality": pc("Qualità"), "growth": pc("Crescita"), "financial_strength": pc("Solidità"),
                                      "valuation": pc("Economicità"), "classification": "Classificazione", "valuation_verdict": "Valutazione",
                                      "valuation_confidence": "Confidenza del verdetto",
-                                     "confidence": "Affidabilità dei dati", "pe": st.column_config.NumberColumn("P/E", format="%.1f"),
+                                     "confidence": "Affidabilità del punteggio", "pe": st.column_config.NumberColumn("P/E", format="%.1f"),
                                      "fcf_sbc_yield": st.column_config.NumberColumn("FCF yield netto SBC", format="percent"),
                                      "roic_5y_median": st.column_config.NumberColumn("ROIC 5a", format="percent"),
                                      "revenue_cagr_5y": st.column_config.NumberColumn("Crescita ricavi 5a", format="percent"),
@@ -647,13 +647,13 @@ def _portfolio_analytics_view(an: dict, tick: dict[str, str], key: str):
     if not an:
         return
     c = st.columns(5)
-    c[0].metric("Volatilità attesa", f"{an['volatility']:.1%}" if an.get("volatility") else "n/d",
+    c[0].metric("Volatilità attesa", f"{pct(an['volatility'], 1)}" if an.get("volatility") else "n/d",
                 help="Rendimenti settimanali in EUR degli ultimi 3 anni. Metodo: " + str(an.get("cov_method") or "n/d"))
-    c[1].metric("N. effettivo di titoli", f"{an.get('effective_n', 0):.1f}", help="1/Σpesi²: quanti titoli 'equivalenti' a pesi uguali")
-    c[2].metric("Rapporto di diversificazione", f"{an.get('diversification_ratio', 0):.2f}",
+    c[1].metric("N. effettivo di titoli", num_it(an.get('effective_n', 0), 1), help="1/Σpesi²: quanti titoli 'equivalenti' a pesi uguali")
+    c[2].metric("Rapporto di diversificazione", num_it(an.get('diversification_ratio', 0), 2),
                 help="Media ponderata delle volatilità / volatilità del portafoglio. Più alto = più benefici dalla diversificazione")
-    c[3].metric("Correlazione media", f"{an['avg_pair_correlation']:.2f}" if an.get("avg_pair_correlation") is not None else "n/d")
-    c[4].metric("Beta vs MSCI World", f"{an['beta']:.2f}" if an.get("beta") is not None else "n/d")
+    c[3].metric("Correlazione media", f"{num_it(an['avg_pair_correlation'], 2)}" if an.get("avg_pair_correlation") is not None else "n/d")
+    c[4].metric("Beta vs MSCI World", f"{num_it(an['beta'], 2)}" if an.get("beta") is not None else "n/d")
     for w in an.get("warnings", []):
         st.warning(esc(w))
     if an.get("missing_prices"):
@@ -682,12 +682,12 @@ def _portfolio_analytics_view(an: dict, tick: dict[str, str], key: str):
                         width="stretch", key=f"{key}_chart6")
         st.caption("⚠️ Non è un backtest della strategia: i titoli sono scelti OGGI con i dati di oggi (look-ahead e survivorship bias). "
                    "Serve a capire come oscillerebbe questo portafoglio, non quanto renderà. "
-                   + (f"Rendimento annuo storico {an['hist_return_ann']:.1%} vs benchmark {an.get('bench_return_ann', float('nan')):.1%}; "
-                      f"perdita massima {an['hist_max_drawdown']:.0%} vs {an.get('bench_max_drawdown', float('nan')):.0%}." if an.get("hist_return_ann") is not None else ""))
+                   + (f"Rendimento annuo storico {pct(an['hist_return_ann'], 1)} vs benchmark {pct(an.get('bench_return_ann', float('nan')), 1)}; "
+                      f"perdita massima {pct(an['hist_max_drawdown'], 0)} vs {pct(an.get('bench_max_drawdown', float('nan')), 0)}." if an.get("hist_return_ann") is not None else ""))
     if an.get("stress_window"):
         sw = an["stress_window"]
         st.info(f"**Stress test storico:** nel peggior trimestre del mercato ({sw['start']} → {sw['end']}) il benchmark ha fatto "
-                f"{sw['benchmark']:.0%}, questo portafoglio {sw['portfolio']:.0%}. ⚠️ I titoli sono stati scelti OGGI "
+                f"{pct(sw['benchmark'], 0)}, questo portafoglio {pct(sw['portfolio'], 0)}. ⚠️ I titoli sono stati scelti OGGI "
                 "guardando anche questo periodo (correlazioni e volatilità degli ultimi 3 anni): il risultato è "
                 "descrittivo, non una prova di come si sarebbe comportata la strategia.")
     cm = an.get("correlation_matrix")
@@ -717,7 +717,7 @@ def page_portfolio():
                          "superati di molto. Non è una proposta diversificata: è una lista di candidati da studiare.")
             m1, m2, m3 = st.columns(3)
             m1.metric("Posizioni", len(p["positions"]))
-            m2.metric("Rotazione vs proposta precedente", f"{p['turnover']:.0%}" if p.get("turnover") is not None else "n/d",
+            m2.metric("Rotazione vs proposta precedente", f"{pct(p['turnover'], 0)}" if p.get("turnover") is not None else "n/d",
                       help="Quota del capitale da spostare rispetto all'ultima proposta della stessa modalità")
             m3.metric("Soglia di percentile usata", f"{p.get('min_percentile_used', float('nan')):.0f}"
                       if p.get("min_percentile_used") is not None else "n/d")
@@ -729,7 +729,7 @@ def page_portfolio():
                 bad = cdf[~cdf["rispettato"].astype(bool)]
                 if len(bad):
                     st.warning("Vincoli NON rispettati: " + "; ".join(
-                        f"{r.vincolo} {r.effettivo:.1%} (configurato {r.configurato:.1%})" for r in bad.itertuples()))
+                        f"{r.vincolo} {pct(r.effettivo, 1)} (configurato {pct(r.configurato, 1)})" for r in bad.itertuples()))
                 with st.expander("Vincoli di diversificazione: configurati vs effettivi"):
                     st.dataframe(cdf.assign(rispettato=cdf["rispettato"].map({True: "sì", False: "NO"})),
                                  hide_index=True, width="stretch",

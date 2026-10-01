@@ -419,3 +419,16 @@ def test_short_history_holding_is_excluded_not_riskless():
     assert an["short_history"] == ["C2"] and "C2" in an["missing_prices"]
     assert "C2" not in an["risk_contribution"]
     assert any("esclusi dall'analisi di rischio" in w for w in an["warnings"])
+
+
+def test_name_cap_relaxation_is_spread_evenly():
+    """Verifier: 12 names with max 8% (96%) must become ~8.33% each, not 11 × 8% + one at 12%."""
+    idx = [f"C{i}" for i in range(12)]
+    w = pd.Series(np.linspace(1, 2, 12), index=idx)
+    w = w / w.sum()
+    sectors = pd.Series(["A", "B", "C", "D", "E", "F"] * 2, index=idx)
+    regions = pd.Series(["Nord America", "Europa"] * 6, index=idx)
+    out, rep = enforce_caps(w, sectors, regions, 0.025, 0.08, 0.25, {"Nord America": 0.65, "Europa": 0.65})
+    assert out.max() == pytest.approx(1 / 12, abs=1e-6)
+    port = construct_portfolio(_scores(12), _weekly(12), _cfg(min_positions=12))
+    assert port["status"] != "concentrato" or any("area" in line or "settore" in line for line in port["log"])

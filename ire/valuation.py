@@ -105,7 +105,7 @@ def reverse_dcf(market_cap: float | None, fcf_fy: pd.Series, fcf_ttm: float | No
     base, method = normalized_fcf(fcf_fy, fcf_ttm, ttm_end)
     if risk_free is None:
         risk_free = DEFAULT_RF
-        rf_source = f"ASSUNZIONE: tasso risk-free non disponibile per questa valuta, uso {DEFAULT_RF:.1%}"
+        rf_source = f"ASSUNZIONE: tasso risk-free non disponibile per questa valuta, uso {DEFAULT_RF * 100:.1f}%".replace(".", ",")
     r = risk_free + erp
     # long-run nominal growth cannot exceed the currency's long-run nominal risk-free rate (JPY ≠ USD)
     if g_term > risk_free:
