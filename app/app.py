@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import charts  # noqa: E402
 import data  # noqa: E402
 from ire.classify import SECTOR_IT  # noqa: E402
-from ire.glossary import GLOSSARY, KIND_IT, explain, fmt, label, money  # noqa: E402
+from ire.glossary import GLOSSARY, KIND_IT, explain, fmt, label, money, num_it  # noqa: E402
 from ire.scoring import (C_AVG, C_CHEAP, C_GROWTH, C_NODATA, C_QDET, C_QDISC, C_QFAIR, C_QFULL,  # noqa: E402
                          C_REDFLAG, C_TEMP, C_TRAP, NEGATIVE_CLASSES, PILLARS, QUALITY_DISCOUNT)
 
@@ -149,7 +149,8 @@ def page_home():
         if df.empty:
             st.info("Nessuna società in questa categoria nell'ultima analisi.")
             return
-        cols = ["ticker", "name", "sector", "country", "robust_score", "quality", "valuation", "valuation_verdict", "confidence"]
+        cols = ["ticker", "name", "sector", "country", "robust_score", "quality", "valuation", "valuation_verdict",
+                "valuation_confidence", "confidence"]
         view = df[cols].copy()
         view["sector"] = view["sector"].map(sector_it)
         ev = st.dataframe(
@@ -160,15 +161,19 @@ def page_home():
                 "robust_score": st.column_config.ProgressColumn("Punteggio robusto", min_value=0, max_value=100, format="%.0f"),
                 "quality": st.column_config.NumberColumn("Qualità", format="%.0f"),
                 "valuation": st.column_config.NumberColumn("Economicità", format="%.0f"),
-                "valuation_verdict": "Valutazione", "confidence": "Confidenza"})
+                "valuation_verdict": "Valutazione", "valuation_confidence": "Confidenza del verdetto",
+                "confidence": "Affidabilità dei dati"})
         if ev and ev.selection and ev.selection.rows:
             go_company(df.iloc[ev.selection.rows[0]]["company_id"])
 
     top = scored.sort_values("robust_score", ascending=False)
     show(top[top.classification.isin(QUALITY_DISCOUNT)].head(20),
-         "💎 Qualità a sconto vs pari", "Alta qualità, prezzo basso rispetto ai pari, nessun segno di deterioramento. Il punto di partenza per la ricerca.")
+         "💎 Qualità a sconto vs pari", "Qualità alta e multipli bassi rispetto ai pari secondo i dati disponibili; i controlli "
+         "automatici di deterioramento e le principali segnalazioni finanziarie non sono scattati. È un elenco da "
+         "studiare, non da comprare: controlla verdetto e segnalazioni nella scheda.")
     show(top[top.classification == C_QFAIR].head(15),
-         "✅ Qualità a prezzo ragionevole", "Aziende eccellenti valutate nella media del settore.")
+         "✅ Qualità a prezzo ragionevole", "Qualità sopra i pari (≥ 70/100) e valutazione non estrema: controlla il "
+         "verdetto di valutazione nella tabella.")
     big = top.sort_values("market_cap_eur", ascending=False, na_position="last")
     show(big[big.classification.isin(NEGATIVE_CLASSES)].head(15),
          "🚩 Da maneggiare con cura (grandi società)", "Red flag gravi o apparente economicità con fondamentali in peggioramento.")
@@ -182,6 +187,10 @@ def page_company():
     if RUN is None:
         no_data()
     U = data.universe(RUN).sort_values("robust_score", ascending=False, na_position="last")
+    if U.empty:
+        st.warning("L'ultima analisi completata non contiene società con dati: controlla il log nella pagina "
+                   "*Dati e metodologia*.")
+        st.stop()
     labels = list(U["label"])
     ids = list(U["company_id"])
     cid = st.session_state.get("cid") or st.query_params.get("cid") or (ids[0] if ids else None)
@@ -205,12 +214,12 @@ def page_company():
                + (f" · Altre quotazioni: {', '.join(alt)}" if alt else ""))
     mk = d["market"]
     h1, h2, h3, h4 = st.columns(4)
-    h1.metric("Prezzo", f"{mk.get('price'):,.2f} {mk.get('price_currency')}" if mk.get("price") else "n/d",
+    h1.metric("Prezzo", f"{num_it(mk.get('price'), 2)} {mk.get('price_currency')}" if mk.get("price") else "n/d",
               help=f"Ultima chiusura disponibile ({mk.get('as_of')}) da Yahoo Finance")
     h2.metric("Capitalizzazione", money(mv("market_cap"), cur), help=d["market_extra"].get("market_cap_method"))
     h3.metric("Punteggio robusto", f"{sc.get('robust_score'):.0f}/100" if sc.get("robust_score") is not None else "n/d",
               help="Mediana dei punteggi sotto 5 schemi di pesi")
-    h4.metric("Confidenza del giudizio", sc.get("confidence") or "n/d",
+    h4.metric("Affidabilità del punteggio", sc.get("confidence") or "n/d",
               help="Dipende da copertura dei dati, qualità della fonte, anni di storia e stabilità della classifica")
 
     k1, k2 = st.columns([1.1, 1])
@@ -325,10 +334,11 @@ def page_company():
         st.markdown("#### 🔄 Reverse DCF interattivo — *quanta crescita sta pagando il prezzo?*")
         if rd and rd.get("fcf_base") and mv("market_cap"):
             r1, r2, r3 = st.columns(3)
-            dr = r1.slider("Tasso di sconto (rendimento richiesto)", 0.04, 0.16,
-                           clamp(round(rd["discount_rate"] / 0.0025) * 0.0025, 0.04, 0.16), 0.0025, format="%.4f")
-            gt = r2.slider("Crescita perpetua dopo l'orizzonte", 0.0, 0.04,
-                           clamp(round(rd["terminal_growth"] / 0.0025) * 0.0025, 0.0, 0.04), 0.0025, format="%.4f")
+            # sliders in PERCENT (4.25 = 4,25%), converted to fractions for the model
+            dr = r1.slider("Tasso di sconto (%)", 4.0, 16.0,
+                           clamp(round(rd["discount_rate"] * 400) / 4, 4.0, 16.0), 0.25, format="%.2f") / 100
+            gt = r2.slider("Crescita perpetua dopo l'orizzonte (%)", 0.0, 4.0,
+                           clamp(round(rd["terminal_growth"] * 400) / 4, 0.0, 4.0), 0.25, format="%.2f") / 100
             yrs = r3.slider("Anni di crescita esplicita", 5, 15, int(clamp(rd["years"], 5, 15)))
             if dr <= gt + 0.005:
                 st.warning("Il tasso di sconto deve superare la crescita perpetua di almeno 0,5 punti: con valori così "
@@ -336,8 +346,11 @@ def page_company():
             else:
                 _dcf_scenario(rd, mv, cur, dr, gt, yrs)
         else:
-            st.info("Reverse DCF non applicabile: " + ((rd.get("status") or "dati insufficienti") if rd else
-                    "banca/assicurazione o free cash flow non positivo/stabile (il DCF sui flussi di cassa non è significativo)."))
+            st.info("Reverse DCF non applicabile: " + (("capitalizzazione non disponibile" if rd.get("fcf_base")
+                                                        else (rd.get("fcf_base_method") or rd.get("status")
+                                                              or "dati insufficienti")) if rd else
+                    "dati di mercato non disponibili" if not c.get("is_banklike") else
+                    "banca/assicurazione: il DCF sui flussi di cassa non è significativo."))
 
     with tabs[2]:
         px = data.prices(c.get("ticker"), c.get("price_currency"))
@@ -346,13 +359,21 @@ def page_company():
         else:
             fx = data.fx_table()
             eur = fx.series_to_eur(px["adj_close"], c.get("price_currency") or "USD")
-            bench = data.prices("SWDA.MI", "EUR")
-            start = eur.index.max() - pd.DateOffset(years=5)
+            if eur is None or eur.dropna().empty:
+                st.info(f"Cambio {c.get('price_currency')}/EUR non disponibile: grafici in euro non mostrati.")
+                eur = None
+        if not px.empty and eur is not None:
+            eur = eur.dropna()
+            bench, bench_name = data.benchmark(RUN)
+            start = max(eur.index.max() - pd.DateOffset(years=5), eur.index.min())
+            if bench is not None and len(bench):
+                start = max(start, bench.index.min())          # same starting date for both lines
             s = {f"{c.get('ticker')} (rendimento totale in EUR)": eur[eur.index >= start]}
-            if not bench.empty:
-                s["MSCI World (SWDA.MI, EUR)"] = bench["adj_close"][bench.index >= start]
+            if bench is not None and len(bench):
+                s[f"Benchmark: {bench_name}"] = bench[bench.index >= start]
             s = {k: v / v.dropna().iloc[0] * 100 for k, v in s.items() if v.dropna().size}
-            st.plotly_chart(charts.lines(s, "Crescita di 100 € investiti 5 anni fa (dividendi reinvestiti)"), width="stretch")
+            st.plotly_chart(charts.lines(s, f"Crescita di 100 € investiti dal {start.date()} (dividendi reinvestiti)"),
+                            width="stretch")
             e5 = eur[eur.index >= start].dropna()
             dd = e5 / e5.cummax() - 1
             fig = go.Figure(go.Scatter(x=dd.index, y=dd.values, fill="tozeroy", line={"color": charts.BAD, "width": 1}))
@@ -426,7 +447,7 @@ def page_company():
         if not cf.empty:
             st.markdown("**⚖️ Discrepanze tra fonti**")
             st.dataframe(cf, hide_index=True, width="stretch",
-                         column_config={"pct_diff": st.column_config.NumberColumn("Differenza", format="%.1%%")})
+                         column_config={"pct_diff": st.column_config.NumberColumn("Differenza", format="percent")})
         if not facts.empty:
             f2 = facts.copy()
             if c.get("cik"):
@@ -450,13 +471,20 @@ def _dcf_scenario(rd: dict, mv, cur: str | None, dr: float, gt: float, yrs: int)
 
     g, status = implied_growth(mv("market_cap"), rd["fcf_base"], dr, gt, yrs)
     st.metric("Crescita annua del FCF implicita nel prezzo", f"{g:.1%}" if g is not None else "n/d", help=status)
-    hist = [(label(k), mv(k)) for k in ("fcf_ps_cagr_5y", "revenue_cagr_5y", "revenue_cagr_10y") if mv(k) is not None]
+    hist = [(label(k), mv(k)) for k in ("fcf_cagr_5y", "revenue_cagr_5y", "revenue_cagr_10y")
+            if mv(k) is not None and pd.notna(mv(k))]
     if hist:
-        st.caption("Per confronto — " + " · ".join(f"{n}: {v:.1%}" for n, v in hist))
-    ug = st.slider("Scenario: la tua ipotesi di crescita annua del FCF", -0.10, 0.30,
-                   clamp(round(g if g is not None else 0.05, 2), -0.10, 0.30), 0.01, format="%.2f")
+        st.caption("Per confronto (storico) — " + " · ".join(f"{n}: {num_it(v * 100)}%" for n, v in hist))
+    default = clamp(round((g if g is not None else 0.05) * 200) / 2, -10.0, 30.0)     # 0,5-point steps
+    ug = st.slider("Scenario: la tua ipotesi di crescita annua del FCF (%)", -10.0, 30.0, default, 0.5, format="%.1f",
+                   help="Parte dalla crescita implicita nel prezzo (arrotondata a 0,5 punti): spostala per vedere "
+                        "come cambia il valore.") / 100
     val = dcf_value(rd["fcf_base"], ug, dr, gt, yrs)
-    if val is not None and np.isfinite(val):
+    moved = g is None or abs(ug - g) >= 0.005
+    if val is not None and np.isfinite(val) and not moved:
+        st.caption("Con l'ipotesi uguale alla crescita implicita il valore coincide con la capitalizzazione: sposta il "
+                   "cursore per esplorare altri scenari.")
+    elif val is not None and np.isfinite(val):
         st.markdown(esc(f"Con crescita {ug:.0%} per {yrs} anni il valore stimato è **{money(val, cur)}** contro una "
                         f"capitalizzazione di **{money(mv('market_cap'), cur)}** (**{val / mv('market_cap') - 1:+.0%}**)."))
     st.caption(esc(f"FCF di partenza: {money(rd['fcf_base'], cur)} ({rd['fcf_base_method']}). Tasso risk-free: "
@@ -489,8 +517,9 @@ def page_compare():
     if cid in set(U.company_id):
         row = U[U.company_id == cid].iloc[0]
         peers = U[(U.industry == row["industry"]) & (U.company_id != cid)].copy()
-        if "market_cap" in peers:
-            peers["d"] = (np.log(peers["market_cap"].astype(float).clip(lower=1)) - np.log(max(float(row.get("market_cap") or 1), 1))).abs()
+        if "market_cap_eur" in peers:
+            peers["d"] = (np.log(peers["market_cap_eur"].astype(float).clip(lower=1))
+                          - np.log(max(float(row.get("market_cap_eur") or 1), 1))).abs()
             peers = peers.sort_values("d")
         default = [row["label"]] + list(peers["label"].head(2))
     pick = st.multiselect("Scegli da 2 a 5 aziende (suggerite: stessa industria, dimensione simile)", list(U["label"]), default=default,
@@ -567,7 +596,7 @@ def page_screener():
     classes = f3.multiselect("Classificazione", sorted(U["classification"].dropna().unique()))
     g1, g2, g3, g4 = st.columns(4)
     verdicts = g1.multiselect("Valutazione", sorted(U["valuation_verdict"].dropna().unique()))
-    conf = g2.multiselect("Confidenza", ["alta", "media", "bassa"])
+    conf = g2.multiselect("Affidabilità dei dati", ["alta", "media", "bassa"])
     tier = g3.multiselect("Qualità dati", ["A", "B"], format_func=lambda x: "A (SEC)" if x == "A" else "B (Yahoo)")
     min_mc = g4.number_input("Capitalizzazione minima (mld EUR)", 0.0, 5000.0, 0.0, 1.0)
     df = U.copy()
@@ -588,7 +617,8 @@ def page_screener():
     df = df.sort_values("robust_score", ascending=False, na_position="last")
     st.caption(f"{len(df)} società. Clicca una riga per aprire la scheda.")
     view = df[["ticker", "name", "sector", "region", "robust_score", "rank_spread", "quality", "growth", "financial_strength",
-               "valuation", "classification", "valuation_verdict", "confidence", "pe", "fcf_sbc_yield", "roic_5y_median",
+               "valuation", "classification", "valuation_verdict", "valuation_confidence", "confidence", "pe",
+               "fcf_sbc_yield", "roic_5y_median",
                "revenue_cagr_5y", "net_debt_ebitda"]].copy()
     view["sector"] = view["sector"].map(sector_it)
     pc = lambda n: st.column_config.ProgressColumn(n, min_value=0, max_value=100, format="%.0f")  # noqa: E731
@@ -599,7 +629,8 @@ def page_screener():
                                      help="0 = stessa posizione con tutti i pesi; alto = dipende dai pesi"),
                                      "quality": pc("Qualità"), "growth": pc("Crescita"), "financial_strength": pc("Solidità"),
                                      "valuation": pc("Economicità"), "classification": "Classificazione", "valuation_verdict": "Valutazione",
-                                     "confidence": "Confidenza", "pe": st.column_config.NumberColumn("P/E", format="%.1f"),
+                                     "valuation_confidence": "Confidenza del verdetto",
+                                     "confidence": "Affidabilità dei dati", "pe": st.column_config.NumberColumn("P/E", format="%.1f"),
                                      "fcf_sbc_yield": st.column_config.NumberColumn("FCF yield netto SBC", format="percent"),
                                      "roic_5y_median": st.column_config.NumberColumn("ROIC 5a", format="percent"),
                                      "revenue_cagr_5y": st.column_config.NumberColumn("Crescita ricavi 5a", format="percent"),
@@ -617,7 +648,7 @@ def _portfolio_analytics_view(an: dict, tick: dict[str, str], key: str):
         return
     c = st.columns(5)
     c[0].metric("Volatilità attesa", f"{an['volatility']:.1%}" if an.get("volatility") else "n/d",
-                help="Covarianza a 3 anni (rendimenti settimanali in EUR) con shrinkage di Ledoit-Wolf")
+                help="Rendimenti settimanali in EUR degli ultimi 3 anni. Metodo: " + str(an.get("cov_method") or "n/d"))
     c[1].metric("N. effettivo di titoli", f"{an.get('effective_n', 0):.1f}", help="1/Σpesi²: quanti titoli 'equivalenti' a pesi uguali")
     c[2].metric("Rapporto di diversificazione", f"{an.get('diversification_ratio', 0):.2f}",
                 help="Media ponderata delle volatilità / volatilità del portafoglio. Più alto = più benefici dalla diversificazione")
@@ -656,7 +687,9 @@ def _portfolio_analytics_view(an: dict, tick: dict[str, str], key: str):
     if an.get("stress_window"):
         sw = an["stress_window"]
         st.info(f"**Stress test storico:** nel peggior trimestre del mercato ({sw['start']} → {sw['end']}) il benchmark ha fatto "
-                f"{sw['benchmark']:.0%}, questo portafoglio {sw['portfolio']:.0%}.")
+                f"{sw['benchmark']:.0%}, questo portafoglio {sw['portfolio']:.0%}. ⚠️ I titoli sono stati scelti OGGI "
+                "guardando anche questo periodo (correlazioni e volatilità degli ultimi 3 anni): il risultato è "
+                "descrittivo, non una prova di come si sarebbe comportata la strategia.")
     cm = an.get("correlation_matrix")
     if cm and cm.get("index"):
         corr = pd.DataFrame(cm["values"], index=cm["index"], columns=cm["columns"])
@@ -751,21 +784,38 @@ def page_portfolio():
             _analyze_user(ed, U)
 
 
+# Yahoo suffix → currency, used only when Yahoo metadata are unavailable for a ticker outside the universe
+SUFFIX_CCY = {".MI": "EUR", ".PA": "EUR", ".AS": "EUR", ".DE": "EUR", ".F": "EUR", ".MC": "EUR", ".BR": "EUR",
+              ".LS": "EUR", ".HE": "EUR", ".VI": "EUR", ".IR": "EUR", ".L": "GBp", ".SW": "CHF", ".ST": "SEK",
+              ".CO": "DKK", ".OL": "NOK", ".T": "JPY", ".TO": "CAD", ".AX": "AUD", ".HK": "HKD"}
+
+
+def user_holdings(ed: pd.DataFrame) -> pd.DataFrame:
+    """Cleans the editor table: tickers upper-case, rows of the same ticker (several purchase lots) SUMMED."""
+    df = ed.copy()
+    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
+    df = df[(df["ticker"] != "") & (df["ticker"] != "NAN") & df["weight"].notna()]
+    return df.groupby("ticker", as_index=False)["weight"].sum()
+
+
 def _analyze_user(ed: pd.DataFrame, U: pd.DataFrame):
     from ire.portfolio import analyze_portfolio, serializable
     from ire.risk import weekly_returns
     from ire.sources import yahoo
 
-    ed = ed.dropna(subset=["weight"])
-    ed = ed[ed["ticker"].astype(str).str.strip() != ""]
-    if ed.empty:
-        st.warning("Inserisci almeno un titolo con peso.")
+    hold = user_holdings(ed)
+    if hold.empty or hold["weight"].sum() <= 0 or (hold["weight"] < 0).any():
+        st.warning("Inserisci almeno un titolo con peso o importo maggiore di zero (nessun valore negativo).")
         return
+    entered = dict(zip(hold["ticker"], hold["weight"] / hold["weight"].sum()))
     fx = data.fx_table()
     weekly, weights, meta_rows, missing = {}, {}, [], []
     by_t = U.set_index("ticker")
-    for _, r in ed.iterrows():
-        t = str(r["ticker"]).strip().upper()
+    cid_of = {}
+    for t, wgt in zip(hold["ticker"], hold["weight"]):
+        if wgt <= 0:
+            continue
         if t in by_t.index:
             row = by_t.loc[t]
             cid = row["company_id"]
@@ -780,40 +830,52 @@ def _analyze_user(ed: pd.DataFrame, U: pd.DataFrame):
                 info = yahoo.info(t) or {}
                 raw = yahoo.download_prices([t], start="2019-01-01").get(t)
             if raw is None or raw.empty:
-                missing.append(t)
+                missing.append(f"{t} (nessun prezzo)")
                 continue
-            cur, div = yahoo.normalize_currency(info.get("currency") or "USD")
+            raw_cur = info.get("currency") or next((c for suf, c in SUFFIX_CCY.items() if t.endswith(suf)), None)
+            if raw_cur is None and "." not in t:
+                raw_cur = "USD"                        # no exchange suffix in Yahoo notation = US listing
+            if raw_cur is None:
+                missing.append(f"{t} (valuta sconosciuta)")
+                continue
+            cur, div = yahoo.normalize_currency(raw_cur)
             px = raw / div
             meta_rows.append({"company_id": cid, "sector": info.get("sector") or "n/d", "region": None, "price_currency": cur})
         if px.empty:
-            missing.append(t)
+            missing.append(f"{t} (nessun prezzo)")
             continue
         eur = fx.series_to_eur(px["adj_close"], cur or "USD")
-        if eur is None:
-            missing.append(t)
+        if eur is None or eur.dropna().empty:
+            missing.append(f"{t} (cambio {cur}/EUR non disponibile)")
             continue
-        weekly[cid] = weekly_returns(eur)
-        weights[cid] = float(r["weight"])
+        weekly[cid] = weekly_returns(eur.dropna())
+        weights[cid] = float(wgt)
+        cid_of[cid] = t
     if missing:
-        st.warning("Prezzi non disponibili per: " + ", ".join(missing))
+        st.warning("Esclusi dall'analisi: " + ", ".join(missing))
     if not weights:
         return
     W = pd.DataFrame(weekly)
-    bench = data.prices("SWDA.MI", "EUR")
-    bw = weekly_returns(bench["adj_close"]) if not bench.empty else None
+    bench, bench_name = data.benchmark(RUN)
+    bw = weekly_returns(bench) if bench is not None and len(bench) else None
     an = serializable(analyze_portfolio(weights, W, pd.DataFrame(meta_rows), bw))
-    tick = {**dict(zip(U.company_id, U.ticker)), **{k: k.replace("USER:", "") for k in weights if k.startswith("USER:")}}
+    tick = {**dict(zip(U.company_id, U.ticker)), **cid_of}
     st.subheader("Le tue posizioni viste dal sistema")
     rows = []
-    tot = sum(weights.values())
+    in_risk = [c for c in weights if c not in set(an.get("missing_prices", []))]
+    tot_risk = sum(weights[c] for c in in_risk)
     for cid, w in weights.items():
         rr = U[U.company_id == cid]
-        rows.append({"Ticker": tick.get(cid), "Peso": w / tot,
+        rows.append({"Ticker": tick.get(cid), "Peso inserito": entered.get(cid_of[cid]),
+                     "Peso nell'analisi di rischio": (w / tot_risk) if cid in in_risk and tot_risk else None,
                      "Classificazione": rr["classification"].iloc[0] if len(rr) else "non nell'universo (solo prezzi)",
                      "Valutazione": rr["valuation_verdict"].iloc[0] if len(rr) else "",
                      "Punteggio robusto": rr["robust_score"].iloc[0] if len(rr) else None})
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
-                 column_config={"Peso": st.column_config.NumberColumn(format="percent")})
+                 column_config={"Peso inserito": st.column_config.NumberColumn(format="percent"),
+                                "Peso nell'analisi di rischio": st.column_config.NumberColumn(format="percent")})
+    st.caption(f"Benchmark: {bench_name}. Righe con lo stesso ticker sono state sommate. Il rischio è calcolato solo sui "
+               "titoli con almeno un anno di prezzi recenti, riproporzionando i loro pesi.")
     _portfolio_analytics_view(an, tick, "mine")
 
 
@@ -845,6 +907,8 @@ def page_changes():
                 ch = ch[ch.ticker.isin(wl)]
             kinds = st.multiselect("Tipo", sorted(ch["tipo"].unique()), default=sorted(ch["tipo"].unique()))
             ch = ch[ch["tipo"].isin(kinds)]
+            st.caption("Punteggi e classi sono RELATIVI ai pari: possono cambiare anche se l'azienda non è cambiata (cambia "
+                       "il gruppo di confronto). Guarda prima i cambiamenti dei Fondamentali e le nuove segnalazioni.")
             st.dataframe(ch.drop(columns=["company_id"]), hide_index=True, width="stretch", height=500)
     st.subheader("⭐ Watchlist")
     wl = data.watchlist()
@@ -854,7 +918,8 @@ def page_changes():
         st.rerun()
     if wl and RUN:
         U = data.universe(RUN)
-        w = U[U.ticker.isin(wl)][["ticker", "name", "classification", "valuation_verdict", "robust_score", "confidence"]]
+        w = U[U.ticker.isin(wl)][["ticker", "name", "classification", "valuation_verdict", "valuation_confidence",
+                                  "robust_score", "confidence"]]
         st.dataframe(w, hide_index=True, width="stretch")
         missing = sorted(set(wl) - set(w.ticker))
         if missing:
@@ -895,7 +960,8 @@ def page_data():
     with t2:
         allc = data.all_companies()
         ex = allc[allc.in_universe == 0]
-        st.caption(f"{len(ex)} titoli esaminati ma esclusi dall'universo, con il motivo.")
+        st.caption(f"{len(ex)} titoli esaminati ma esclusi dall'universo, con il motivo. Lo stato si riferisce all'ultima "
+                   "esecuzione, anche se non completata.")
         ex = ex.assign(motivo=ex["exclusion_reason"].str.split("(").str[0].str.strip())
         st.dataframe(ex["motivo"].value_counts(), width="stretch")
         st.dataframe(ex[["ticker", "name", "exclusion_reason"]], hide_index=True, width="stretch", height=400)

@@ -25,7 +25,8 @@ Due **livelli di qualità** dei bilanci:
 
 - **A — filing SEC (XBRL)**: storico lungo, provenienza per singolo filing, riesposizioni tracciate.
 - **B — Yahoo**: circa 4-5 anni, voci standardizzate dal fornitore di Yahoo (le definizioni possono differire
-  dal bilancio ufficiale). Il livello B **abbassa la confidenza** del giudizio.
+  dal bilancio ufficiale). Il livello B **abbassa di un livello l'affidabilità** del punteggio (una sola volta, anche
+  se coincide con storico breve e minore copertura delle metriche: sono la stessa debolezza).
 
 Quando le due fonti sono disponibili per la stessa società (livello A), le voci principali dell'ultimo anno
 vengono confrontate: le differenze sopra il 2% sono registrate tra le *discrepanze tra fonti* con una spiegazione
@@ -57,12 +58,29 @@ solo se rispettano la soglia di liquidità.
   stesso periodo dell'anno prima (dai 10-Q). Senza trimestrali (molti 20-F) TTM = ultimo anno fiscale, e l'età del
   dato è segnalata.
 - **Split**: azioni e utile per azione depositati prima di uno split sono rettificati (solo filer domestici).
+- **Capex** = totale degli investimenti in impianti; se la società riporta voci separate (es. pozzi petroliferi e
+  "altri impianti", sviluppo immobiliare, macchinari) vengono **sommate** (un totale maggiore o uguale alle voci è
+  considerato già comprensivo). L'acquisto di immobili è un'acquisizione, non capex.
+- **Debito** = debito a lungo termine (quote correnti incluse) + debiti a breve, evitando di contare due volte le
+  quote correnti. Per i debiti a breve (finanziamenti a breve e carta commerciale) non si sommano voci che potrebbero
+  includersi a vicenda: in caso di dubbio si prende la voce maggiore (scelta prudente, può sottostimare).
+- **Ultimo bilancio**: è quello con la data più recente del totale attivo. Una voce non più riportata a quella data
+  non viene usata con il valore di anni prima: le voci minori valgono 0 (assunzione); il debito sparito vale 0 solo
+  se non ci sono interessi passivi (segnalazione `ASSUMED_DEBT_REPAID`), altrimenti è sconosciuto.
+- **Senza utile operativo** (molte società energetiche e industriali): EBIT = utile ante imposte + interessi passivi,
+  EBITDA = EBIT + ammortamenti, sempre sullo stesso periodo.
+- **Valuta di bilancio** = quella dell'ultimo bilancio annuale (gestisce chi è passato, ad esempio, da USD a EUR).
+- **Passività totali**: se la voce non è riportata, totale passivo e patrimonio − patrimonio netto.
 - **Voci mai riportate**: solo voci minori (dividendi, riacquisti, acquisizioni, avviamento, interessi di
   minoranza…) valgono 0, con nota di *assunzione*. **Debito, capex e compensi in azioni non sono mai assunti a 0**:
   restano mancanti e le metriche che li usano non vengono calcolate. Il debito è assunto 0 solo se non ci sono
   interessi passivi e le passività non correnti sono sotto il 15% dell'attivo (segnalazione `ASSUMED_ZERO_DEBT`).
-- **IFRS 16**: per i filer IFRS i debiti per leasing sono aggiunti al debito finanziario e i rimborsi di leasing
-  sottratti dal free cash flow, per confrontarli con i filer US GAAP.
+- **Leasing**: per i filer IFRS (IFRS 16) i debiti per leasing sono aggiunti al debito finanziario e i rimborsi di
+  leasing sottratti dal free cash flow; per i filer US GAAP lo stesso vale per i **leasing finanziari** (il cui costo,
+  come per IFRS 16, è sotto l'EBITDA), salvo che il concetto di debito li includa già. I leasing operativi US GAAP
+  restano esclusi (il loro costo è già nell'EBITDA).
+- **Split**: rilevati anche i rapporti 3:2, 5:4, 4:3, 5:2; se il numero di azioni salta in modo compatibile con uno
+  split non rettificato, le metriche per azione e la diluizione non vengono calcolate.
 - **Azioni privilegiate** escluse dal patrimonio degli azionisti ordinari (P/B, ROE).
 
 ## 4. Prezzi, valute e capitalizzazione
@@ -71,10 +89,13 @@ solo se rispettano la soglia di liquidità.
   di rand e agorot sono convertiti nell'unità principale.
 - **Aggiornamento dei prezzi**: ogni giorno si scaricano solo le ultime settimane e si confrontano con quelle già
   salvate. Se Yahoo ha ricalcolato lo storico (dopo uno split o un dividendo, scarto > 0,5%) o compare uno split
-  nuovo, l'intero storico viene riscaricato. Lo storico completo viene comunque riscaricato ogni 7 giorni
-  (predefinito). Un download vuoto (spesso un limite di richieste di Yahoo) non viene mai considerato "fresco".
+  nuovo, l'intero storico viene riscaricato; quello vecchio resta finché il nuovo non è arrivato. Lo storico
+  completo viene comunque riscaricato ogni 7 giorni (predefinito). La barra del giorno corrente non viene salvata
+  (può essere un prezzo intraday). Un download vuoto (spesso un limite di richieste di Yahoo) non viene mai
+  considerato "fresco".
 - **Cambi**: si usa il cambio dello stesso giorno o, se manca, l'ultimo disponibile **al massimo 10 giorni prima**.
-  Una valuta che la BCE non pubblica più non viene usata con un cambio vecchio.
+  Una valuta che la BCE non pubblica più non viene usata con un cambio vecchio (la freschezza si misura separatamente
+  per i cambi BCE e per quelli Yahoo). Se i cambi BCE sono fermi da più di 7 giorni l'analisi lo segnala.
 - **Capitalizzazione** = prezzo × azioni, nella valuta di bilancio:
   - filer SEC domestici: azioni in circolazione dalla copertina del 10-K/10-Q; se differiscono di oltre il 15% da
     quelle Yahoo (più classi di azioni, dati non aggiornati) si usa Yahoo e la discrepanza è registrata;
@@ -89,11 +110,11 @@ Ogni metrica ha valore, periodo, formula in parole e input. Esempi delle princip
 
 | Area | Metrica | Formula |
 |---|---|---|
-| Valutazione | Rendimento operativo (EBIT/EV) | EBIT TTM / enterprise value (EV = capitalizzazione + debito + minoranze − cassa − investimenti a breve) |
+| Valutazione | Rendimento operativo (EBIT/EV) | EBIT TTM / enterprise value (EV = capitalizzazione + debito + minoranze + azioni privilegiate − cassa − investimenti a breve) |
 | | Rendimento operativo dopo le tasse | EBIT × (1 − aliquota effettiva) / EV, confrontabile con i titoli di Stato |
 | | FCF yield netto stock option | (free cash flow − compensi in azioni) / capitalizzazione |
 | | P/E, EV/EBIT, EV/EBITDA, EV/ricavi, P/B, P/TBV (banche), P/FFO (REIT) | calcolati solo con denominatore positivo |
-| | Multipli vs propria storia | percentile del multiplo attuale tra i multipli di fine anno fiscale (almeno 5 anni) |
+| | Multipli vs propria storia | percentile del multiplo attuale tra i multipli di fine anno fiscale (almeno 4 anni), calcolati con la stessa base di azioni della capitalizzazione attuale |
 | Qualità | ROIC | NOPAT / capitale investito medio; NOPAT = EBIT × (1 − aliquota effettiva limitata 0-35%; 21% se non calcolabile, dichiarato come assunzione); capitale investito = attivo − cassa − investimenti a breve − passività correnti non finanziarie |
 | | Conversione in cassa | mediana di FCF / utile netto negli anni con utile positivo |
 | | Accruals (Sloan) | (utile netto − flusso di cassa operativo) / attivo medio |
@@ -101,7 +122,7 @@ Ogni metrica ha valore, periodo, formula in parole e input. Esempi delle princip
 | Solidità | Debito netto / EBITDA | non calcolabile se EBITDA ≤ 0: in quel caso, con debito netto positivo, il punteggio è il peggiore possibile |
 | | Copertura interessi, liquidità corrente, Piotroski F-score, Altman Z, Beneish M-score | definizioni standard |
 | Allocazione del capitale | Variazione del numero di azioni, compensi in azioni / ricavi, shareholder yield, acquisizioni / FCF | |
-| Rischio (in EUR) | Volatilità 1 e 3 anni, perdita massima 5 e 10 anni, beta verso MSCI World, momentum 12-1 mesi | rendimenti totali convertiti in euro |
+| Rischio (in EUR) | Volatilità 1 e 3 anni, perdita massima 5 e 10 anni, beta verso MSCI World, momentum 12-1 mesi | rendimenti totali convertiti in euro (anche il momentum) |
 
 Banche e assicurazioni hanno metriche dedicate (ROE, ROA, patrimonio/attivo, P/TBV); i margini e il ROIC non
 vengono calcolati per loro.
@@ -110,7 +131,9 @@ vengono calcolati per loro.
 
 1. **Gruppo di confronto**: il settore (Yahoo o, in mancanza, dal codice SIC). Banche, assicurazioni e altri
    intermediari finanziari sono gruppi separati. Se un gruppo ha meno di 8 società (predefinito), le finanziarie
-   si confrontano con tutta la finanza e le altre con **tutto l'universo non finanziario**.
+   si confrontano con tutta la finanza e le altre con **tutto l'universo non finanziario**. Le metriche di
+   valutazione tipiche dei REIT (P/FFO, rendimento da dividendo, EV/EBITDA) si confrontano solo tra REIT (se sono
+   almeno 5). Le "mediane dei pari" mostrate usano la stessa popolazione dei percentili.
 2. **Percentile a rango medio**: `p = (rango − 0,5) / n`. Così "più alto = meglio" e "più basso = meglio" sono
    esattamente speculari e nessuna società risulta 0 o 100 per costruzione.
 3. **Campioni piccoli**: servono almeno 5 società con il dato; sotto 10 il percentile viene avvicinato a 50 in
@@ -122,9 +145,11 @@ vengono calcolati per loro.
    sue metriche, altrimenti è "insufficiente". Se una metrica a 5 anni manca si usa la versione breve (es. ROIC
    ultimo anno) senza contarla due volte.
 6. **Punteggio robusto** = mediana del punteggio composito sotto **5 schemi di pesi** (configurato, uguali,
-   orientato a qualità, a valore, a crescita). L'**instabilità del rango** misura quanto la posizione dipende dai
+   orientato a qualità, a valore, a crescita). Servono Qualità, Valutazione e almeno 3 pilastri su 5: la stessa
+   regola vale per tutti gli schemi. L'**instabilità del rango** misura quanto la posizione dipende dai
    pesi. Attenzione: questa robustezza riguarda solo i pesi, non gli errori nei dati.
-7. Senza capitalizzazione o con bilanci più vecchi di 550 giorni la società non riceve punteggio.
+7. Senza capitalizzazione o con bilanci più vecchi di 550 giorni la società non riceve punteggio e non entra nei
+   gruppi di confronto delle altre.
 
 ## 7. Classificazione
 
@@ -133,9 +158,9 @@ Le etichette descrivono **cosa mostrano i numeri rispetto ai pari**, non cosa fa
 | Etichetta | Regola (Q = qualità, V = valutazione, G = crescita) |
 |---|---|
 | **Red flag: approfondire** | una segnalazione grave, oppure una bloccante (going concern, debolezza materiale nei controlli, bilanci non affidabili 8-K 4.02, bancarotta, delisting, accelerazione del debito, forte diluizione, leva o copertura interessi critiche), oppure due segnalazioni di gravità alta |
-| **Possibile sottovalutazione temporanea** | Q ≥ 70, V ≥ 65, nessun segnale di deterioramento, e multipli bassi rispetto alla propria storia oppure prezzo ≥ 25% sotto il massimo a 3 anni |
-| **Qualità a sconto vs pari** | Q ≥ 70, V ≥ 65, nessun segnale di deterioramento |
-| **Possibile value trap** | V ≥ 70 e (Q < 40 oppure segnali di deterioramento) |
+| **Possibile sottovalutazione temporanea** | come "Qualità a sconto vs pari", e in più multipli bassi rispetto alla propria storia oppure prezzo ≥ 25% sotto il massimo a 3 anni |
+| **Qualità a sconto vs pari** | Q ≥ 70, V ≥ 65, economicità **sui soli multipli vs pari** ≥ 60, nessun segnale di deterioramento né di cautela |
+| **Possibile value trap** | V ≥ 70 e (Q < 40, oppure segnali di deterioramento, oppure margini ai massimi del ciclo) |
 | **Qualità in deterioramento** | Q ≥ 70 con segnali di deterioramento |
 | **Qualità a prezzo pieno** | Q ≥ 70, V < 40 |
 | **Qualità a prezzo ragionevole** | Q ≥ 70 (altri casi) |
@@ -143,15 +168,19 @@ Le etichette descrivono **cosa mostrano i numeri rispetto ai pari**, non cosa fa
 | **Economica** | V ≥ 70 con qualità nella media |
 | **Nella media** / **Dati insufficienti** | negli altri casi / senza punteggio |
 
-**Segnali di deterioramento**: ricavi in calo nell'ultimo anno, margini in peggioramento, debito in forte aumento,
-FCF negativo, perdite persistenti, margini ai massimi del ciclo; e su più anni: ricavi in calo da 5 anni (o oltre
-−3% l'anno da 3 anni), margine operativo 3-5 punti sotto la mediana a 5 anni, FCF per azione in calo oltre il 5%
-l'anno, pilastro crescita sotto 25. Una singola segnalazione di gravità alta impedisce le etichette positive.
+**Segnali di deterioramento** (nel tempo): ricavi in calo nell'ultimo anno, margini in peggioramento, debito in forte
+aumento, FCF negativo, perdite persistenti; e su più anni: ricavi in calo da 5 anni (o oltre −3% l'anno da 3 anni),
+margine operativo 3-5 punti sotto la mediana a 5 anni, FCF per azione in calo oltre il 5% l'anno. Una singola
+segnalazione di gravità alta impedisce le etichette positive.
+
+**Segnali di cautela** (non sono un peggioramento, ma rendono dubbio che un prezzo basso sia un vero sconto): crescita
+tra le più deboli del settore (pilastro crescita < 25), margini ai massimi del ciclo, segnalazioni finanziarie medie
+(leva, copertura interessi, Altman, dividendo non coperto, diluizione, accruals, Beneish, depositi tardivi, cambio del
+revisore, riesposizioni). Impediscono le etichette "a sconto" ma non escludono dal portafoglio.
 
 ## 8. Valutazione: verdetto e reverse DCF
 
-Non viene mai presentato un "valore giusto" unico come fatto. Il verdetto combina **4 segnali basati su evidenze
-diverse**:
+Non viene mai presentato un "valore giusto" unico come fatto. Il verdetto combina **4 segnali**:
 
 1. **Rispetto ai concorrenti**: solo i multipli rispetto ai pari (punteggio `valuation_peers`): ≥ 65 economica, ≤ 35 costosa.
 2. **Rispetto alla propria storia**: percentile medio dei multipli attuali (P/E, EV/EBIT, P/FCF) nella storia della
@@ -163,8 +192,10 @@ diverse**:
 Se il margine attuale è oltre 1,5 volte la mediana del ciclo (`CYCLICAL_PEAK`) i segnali 2 e 3 vengono mostrati ma
 non contati: multipli bassi su utili di picco non indicano economicità.
 
-**Confidenza del verdetto**: *alta* con almeno 3 segnali, almeno il 75% del peso a favore e nessun segnale
-opposto; *media* con almeno 2 segnali e almeno il 50% a favore senza opposti; altrimenti *bassa*.
+I segnali 1 e 4 guardano entrambi il prezzo rispetto agli utili attuali: per la confidenza contano come **una sola
+evidenza**. **Confidenza del verdetto**: *alta* con almeno 3 evidenze indipendenti, almeno il 75% del peso a favore
+e nessun segnale opposto; *media* con almeno 2 evidenze e almeno il 50% a favore senza opposti; altrimenti *bassa*.
+Nell'interfaccia la "confidenza del verdetto" è distinta dall'"affidabilità dei dati" del punteggio.
 
 **Reverse DCF** — risponde a: *quale crescita del free cash flow giustifica il prezzo attuale?*
 
@@ -199,9 +230,9 @@ opposto; *media* con almeno 2 segnali e almeno il 50% a favore senza opposti; al
 
 Non è una selezione dei primi N e non è un'ottimizzazione media-varianza (troppo sensibile agli errori di stima).
 
-1. **Candidati**: punteggio robusto ≥ 70° percentile (predefinito), confidenza non bassa, nessuna classe tra Red
-   flag, Possibile value trap, Qualità in deterioramento, Dati insufficienti; almeno 130 settimane di prezzi negli
-   ultimi 3 anni (predefinito). Se i candidati non bastano la soglia scende a 60 e poi a 50, e il log lo dice.
+1. **Candidati**: punteggio robusto ≥ 70° percentile (predefinito), affidabilità dei dati non bassa, nessuna classe
+   tra Red flag, Possibile value trap, Qualità in deterioramento, Dati insufficienti, nessun verdetto "costosa" con
+   confidenza media o alta; almeno 130 settimane di prezzi negli ultimi 3 anni (predefinito). Se i candidati non bastano la soglia scende a 60 e poi a 50, e il log lo dice.
 2. **Selezione greedy**: si aggiunge il miglior punteggio corretto per la correlazione media con i titoli già scelti;
    correlazione massima tra due titoli 0,80; limiti al numero di titoli per settore e area; un piccolo bonus ai
    titoli già presenti nella proposta precedente (meno rotazione).
@@ -209,18 +240,31 @@ Non è una selezione dei primi N e non è un'ottimizzazione media-varianza (trop
    i pesi più vicini che rispettano i limiti (minimi quadrati vincolati): peso per titolo tra 2,5% e 8%, settore
    ≤ 25%, aree (Nord America ≤ 65%, Europa ≤ 45%, Regno Unito, Giappone, Asia-Pacifico ≤ 20%, Altro ≤ 10%).
 4. **Vincoli dichiarati**: ogni vincolo è mostrato come configurato vs effettivo. Se non è rispettabile (troppo pochi
-   candidati diversificati) viene allentato e **riportato come NON rispettato**, mai violato in silenzio.
-5. **Sotto 12 titoli** (predefinito) il portafoglio è **"non proposto"**: viene mostrato solo come elenco di candidati.
-6. **Banda di non intervento**: variazioni di peso sotto 1,5 punti rispetto alla proposta precedente sono ignorate;
-   la rotazione e i titoli usciti sono mostrati.
-7. **Rischio** misurato in EUR su rendimenti settimanali a 3 anni, covarianza con shrinkage di Ledoit-Wolf:
+   candidati diversificati) un programma lineare trova l'**allentamento minimo** dei soli vincoli che lo richiedono
+   (alzare il limite di un singolo titolo "costa" il triplo di un limite di settore o area), e il vincolo è
+   **riportato come NON rispettato**, mai violato in silenzio.
+5. **Sotto 12 titoli** (predefinito) il portafoglio è **"non proposto"**; se i limiti sono superati di molto (oltre 4
+   punti per titolo o 10 punti per settore/area) è **"concentrato"**: in entrambi i casi è solo un elenco di candidati.
+6. **Banda di non intervento**: i titoli il cui nuovo peso differisce meno di 1,5 punti dalla proposta precedente
+   mantengono **esattamente** il peso precedente (nessun micro-ordine); la rotazione e i titoli usciti sono mostrati.
+7. **Rischio** misurato in EUR su rendimenti settimanali a 3 anni, covarianza con shrinkage di Ledoit-Wolf verso una
+   **correlazione costante** (lo shrinkage verso l'identità sottostima il rischio di un portafoglio azionario); un
+   titolo con meno di 52 settimane di prezzi recenti è escluso dal calcolo del rischio e segnalato:
    volatilità attesa, numero effettivo di titoli, rapporto di diversificazione, contributo al rischio, beta e
    perdita nel peggior trimestre del benchmark (iShares Core MSCI World in EUR, SWDA.MI).
 
 Il grafico "comportamento storico dei pesi attuali" **non è un backtest**: i titoli sono scelti oggi con i dati di
 oggi (distorsione da senno di poi e da sopravvivenza).
 
-## 11. Cosa è cambiato
+## 11. Esecuzioni incomplete
+
+Se un'analisi termina con troppi dati mancanti o vecchi — bilanci ottenuti per meno di metà delle società, nessun
+prezzo per oltre il 20% dei titoli, dati SEC serviti dalla cache scaduta, cambi BCE fermi, o molte meno società con
+punteggio rispetto all'analisi precedente della stessa modalità — viene registrata come **incompleta**: i suoi dati
+restano nel database, ma l'interfaccia, il portafoglio e i confronti continuano a usare l'ultima analisi completa.
+Due analisi non possono girare contemporaneamente.
+
+## 12. Cosa è cambiato
 
 Ogni nuova analisi viene confrontata con l'ultima completata **nella stessa modalità**: cambi di classificazione,
 di verdetto, di punteggio (≥ 10 punti), peggioramenti di margini, crescita, ROIC, leva, diluizione e copertura
@@ -228,7 +272,7 @@ interessi, nuove segnalazioni. Una segnalazione dal testo dei report conta come 
 analizzato anche la volta prima. Le esclusioni dovute a problemi di download sono distinte dalle uscite vere
 dall'universo.
 
-## 12. Limiti principali
+## 13. Limiti principali
 
 - **Sopravvivenza**: l'universo internazionale usa la composizione *attuale* degli indici; le società fallite o uscite
   non ci sono.

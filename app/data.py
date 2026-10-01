@@ -126,6 +126,25 @@ def fx_table():
 
 
 @st.cache_data(ttl=300)
+def benchmark(run_id: int | None) -> tuple[pd.Series | None, str]:
+    """The benchmark the pipeline actually used for this run (SWDA.MI → IWDA.AS → URTH), in EUR."""
+    from ire.risk import BENCHMARKS
+
+    names = dict(BENCHMARKS)
+    tick, cur = "SWDA.MI", "EUR"
+    if run_id is not None:
+        r = q("SELECT summary FROM runs WHERE run_id=?", [run_id])
+        if len(r):
+            summ = json.loads(r["summary"].iloc[0] or "{}")
+            tick, cur = summ.get("benchmark_ticker") or tick, summ.get("benchmark_currency") or cur
+    px = prices(tick, cur)
+    if px.empty:
+        return None, names.get(tick, tick)
+    eur = fx_table().series_to_eur(px["adj_close"], cur)
+    return (eur.dropna() if eur is not None else None), names.get(tick, tick)
+
+
+@st.cache_data(ttl=300)
 def portfolio(run_id: int) -> dict[str, Any]:
     r = q("SELECT payload FROM portfolios WHERE run_id=? AND name='proposto'", [run_id])
     return json.loads(r["payload"].iloc[0]) if len(r) else {}
@@ -162,11 +181,18 @@ def user_portfolio() -> pd.DataFrame:
 
 
 def save_user_portfolio(df: pd.DataFrame) -> None:
+    """Rows with the same ticker (several purchase lots) are SUMMED, never overwritten."""
     c = con()
-    c.execute("DELETE FROM user_portfolio")
+    rows: dict[str, list] = {}
     for _, r in df.iterrows():
         t = str(r.get("ticker") or "").strip().upper()
-        if t and pd.notna(r.get("weight")):
-            c.execute("INSERT OR REPLACE INTO user_portfolio (ticker, weight, note) VALUES (?,?,?)",
-                      (t, float(r["weight"]), r.get("note")))
+        w = pd.to_numeric(r.get("weight"), errors="coerce")
+        if t and t != "NAN" and pd.notna(w):
+            note = r.get("note") if isinstance(r.get("note"), str) and r.get("note") else None
+            prev = rows.get(t, [0.0, []])
+            rows[t] = [prev[0] + float(w), prev[1] + ([note] if note else [])]
+    c.execute("DELETE FROM user_portfolio")
+    for t, (w, notes) in rows.items():
+        c.execute("INSERT OR REPLACE INTO user_portfolio (ticker, weight, note) VALUES (?,?,?)",
+                  (t, w, "; ".join(notes) or None))
     c.commit()

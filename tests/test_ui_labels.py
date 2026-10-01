@@ -105,3 +105,69 @@ def test_methodology_tab_shows_document(world):
     at = _page("data")
     assert not at.exception
     assert any("# Metodologia" in m.value for m in at.markdown)
+
+
+def test_company_page_without_fx_rate(world, monkeypatch):
+    """Red team 2: a quote currency without EUR rate crashed the whole company page."""
+    from ire.db import connect
+    from ire.pipeline import Pipeline
+
+    rid = Pipeline(mode="quick", verbose=False).run()
+    con = connect()
+    cid = con.execute("SELECT company_id FROM scores WHERE run_id=? AND robust_score IS NOT NULL LIMIT 1", (rid,)).fetchone()[0]
+    con.execute("UPDATE companies SET price_currency='TWD' WHERE company_id=?", (cid,))
+    con.commit()
+
+    def setup(at):
+        at.session_state["cid"] = cid
+
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+
+    st.cache_data.clear()
+    monkeypatch.setenv("IRE_TEST_PAGE", "company")
+    at = AppTest.from_file(str(ROOT / "app" / "app.py"), default_timeout=180)
+    setup(at)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Cambio TWD/EUR non disponibile" in i.value for i in at.info)
+
+
+def test_zero_weights_and_duplicate_lots(world, monkeypatch):
+    from ire.db import connect
+    from ire.pipeline import Pipeline
+
+    rid = Pipeline(mode="quick", verbose=False).run()
+    con = connect()
+    t = con.execute("SELECT c.ticker FROM scores s JOIN companies c USING(company_id) WHERE s.run_id=? "
+                    "AND s.robust_score IS NOT NULL LIMIT 1", (rid,)).fetchone()[0]
+    con.executemany("INSERT INTO user_portfolio (ticker, weight, note) VALUES (?,?,?)", [(t, 0.0, ""), ("ZZZ", 0.0, "")])
+    con.commit()
+    at = _page("portfolio", monkeypatch)
+    next(b for b in at.button if "Analizza" in b.label).click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("maggiore di zero" in w.value for w in at.warning)
+
+    sys_path = str(ROOT / "app")
+    import sys
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import data as appdata
+
+    appdata.save_user_portfolio(pd.DataFrame({"ticker": [t, t.lower(), "  "], "weight": [1000.0, 500.0, 3.0],
+                                              "note": ["lotto 1", "lotto 2", ""]}))
+    rows = connect().execute("SELECT ticker, weight, note FROM user_portfolio").fetchall()
+    assert [(r[0], r[1]) for r in rows] == [(t, 1500.0)] and "lotto 2" in rows[0][2]
+
+
+def test_company_page_with_no_scored_companies(world, monkeypatch):
+    from ire.db import connect
+    from ire.pipeline import Pipeline
+
+    rid = Pipeline(mode="quick", verbose=False).run()
+    con = connect()
+    con.execute("DELETE FROM scores WHERE run_id=?", (rid,))
+    con.commit()
+    at = _page("company", monkeypatch)
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("non contiene società" in w.value for w in at.warning)

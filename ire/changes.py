@@ -7,7 +7,7 @@ import sqlite3
 import pandas as pd
 
 from ire.qualitative import is_text_flag
-from ire.scoring import NEGATIVE_CLASSES
+from ire.scoring import C_QDET, C_QFAIR, NEGATIVE_CLASSES, QUALITY_DISCOUNT
 
 METRIC_RULES = [
     # metric, threshold, direction (-1 = a decrease is bad), label, is_points
@@ -72,8 +72,14 @@ def compute_changes(con: sqlite3.Connection, new_run: int, old_run: int) -> pd.D
             continue
         o = s0i.loc[cid]
         if r["classification"] != o["classification"]:
-            bad = r["classification"] in NEGATIVE_CLASSES
-            add(cid, "Classificazione", f"{o['classification']} → {r['classification']}", "alta" if bad else "info")
+            new_c, old_c = r["classification"], o["classification"]
+            if new_c in NEGATIVE_CLASSES:
+                sev = "alta"
+            elif new_c == C_QDET or (old_c in QUALITY_DISCOUNT | {C_QFAIR} and new_c not in QUALITY_DISCOUNT | {C_QFAIR}):
+                sev = "media"          # a quality company losing its positive label is worth a look
+            else:
+                sev = "info"
+            add(cid, "Classificazione", f"{old_c} → {new_c}", sev)
         if r["valuation_verdict"] != o["valuation_verdict"] and r["valuation_verdict"] and o["valuation_verdict"]:
             add(cid, "Valutazione", f"{o['valuation_verdict']} → {r['valuation_verdict']}", "info")
         if pd.notna(r["robust_score"]) and pd.notna(o["robust_score"]) and abs(r["robust_score"] - o["robust_score"]) >= 10:

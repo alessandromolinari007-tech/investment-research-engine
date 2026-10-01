@@ -56,7 +56,7 @@ GLOSSARY: dict[str, tuple[str, str, str]] = {
     "fcf_ps_cagr_5y": ("Crescita FCF per azione (5 anni)", "pct", ""),
     "fcf_cagr_5y": ("Crescita FCF (5 anni)", "pct", ""),
     "bvps_cagr_5y": ("Crescita patrimonio per azione (5 anni)", "pct", ""),
-    "net_debt_ebitda": ("Debito netto / EBITDA", "x", "Anni di margine lordo necessari a ripagare il debito netto. >3-4 = leva alta (dipende dal settore)."),
+    "net_debt_ebitda": ("Debito netto / EBITDA", "x", "Anni di margine operativo lordo (EBITDA) necessari a ripagare il debito netto. >3-4 = leva alta (dipende dal settore)."),
     "debt_equity": ("Debito / patrimonio", "x", ""),
     "interest_coverage": ("Copertura interessi", "x", "Quante volte l'utile operativo copre gli interessi. <3 = attenzione."),
     "current_ratio": ("Liquidità corrente", "x", "Attività a breve / passività a breve. <1 = possibili tensioni di liquidità."),
@@ -75,7 +75,7 @@ GLOSSARY: dict[str, tuple[str, str, str]] = {
     "acquisitions_to_fcf_5y": ("Acquisizioni / FCF (5 anni)", "pct", "Quanta cassa va in acquisizioni: alto = crescita 'comprata'."),
     "capex_to_revenue": ("Capex / ricavi (intensità di capitale)", "pct", "Quanto deve reinvestire per mantenersi e crescere."),
     "capex_to_da": ("Capex / ammortamenti", "x", ""),
-    "implied_fcf_growth": ("Crescita implicita nel prezzo", "pct", "Crescita annua del FCF per 10 anni che giustificherebbe il prezzo attuale (reverse DCF)."),
+    "implied_fcf_growth": ("Crescita implicita nel prezzo", "pct", "Crescita annua del FCF, per gli anni di crescita esplicita del modello (predefinito 10), coerente con il prezzo attuale (reverse DCF, stima)."),
     "growth_gap": ("Implicita − storica", "pctpt", "Negativo = il prezzo sembra scontare meno crescita di quella già realizzata (stima di modello)."),
     "pe_hist_median": ("P/E mediano storico", "x", ""),
     "pe_vs_history_pct": ("P/E vs propria storia", "ratio01", "0% = mai stato così basso, 100% = mai così alto."),
@@ -147,6 +147,15 @@ def explain(key: str) -> str:
     return GLOSSARY.get(key, (key, "num", ""))[2]
 
 
+def it(text: str) -> str:
+    """'1,234.5' → '1.234,5' (Italian separators) for an already formatted number."""
+    return text.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
+def num_it(v: float, decimals: int = 1) -> str:
+    return it(f"{v:,.{decimals}f}")
+
+
 def fmt(key: str, v, currency: str | None = None) -> str:
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return "n/d"
@@ -156,18 +165,18 @@ def fmt(key: str, v, currency: str | None = None) -> str:
     except (TypeError, ValueError):
         return str(v)
     if kind == "pct":
-        return f"{v * 100:.1f}%"
+        return it(f"{v * 100:.1f}%")
     if kind == "pctpt":
-        return f"{v * 100:+.1f} pt"
+        return it(f"{v * 100:+.1f} pt")
     if kind == "ratio01":
         return f"{v * 100:.0f}%"
     if kind == "x":
-        return f"{v:.1f}×"
+        return it(f"{v:.1f}×")
     if kind == "score01":
-        return f"{v * 9:.1f}/9"
+        return it(f"{v * 9:.1f}/9")
     if kind == "money":
         return money(v, currency)
-    return f"{v:,.2f}"
+    return it(f"{v:,.2f}")
 
 
 def money(v: float | None, currency: str | None = None) -> str:
@@ -176,9 +185,9 @@ def money(v: float | None, currency: str | None = None) -> str:
     cur = f" {currency}" if currency else ""
     a = abs(v)
     if a >= 1e12:
-        return f"{v / 1e12:.2f} mila mld{cur}"
+        return it(f"{v / 1e12:.2f}") + f" mila mld{cur}"
     if a >= 1e9:
-        return f"{v / 1e9:.1f} mld{cur}"
+        return it(f"{v / 1e9:.1f}") + f" mld{cur}"
     if a >= 1e6:
-        return f"{v / 1e6:.0f} mln{cur}"
-    return f"{v:,.0f}{cur}"
+        return it(f"{v / 1e6:,.0f}") + f" mln{cur}"
+    return it(f"{v:,.0f}") + cur

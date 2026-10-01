@@ -75,6 +75,9 @@ class PriceStore:
             if readj:
                 self.progress(f"  {len(readj)} titoli con storico rettificato da Yahoo (split/dividendi): "
                               "lo storico completo verrà riscaricato")
+            if self.last_empty:
+                self.progress(f"  nessun prezzo recente ricevuto da Yahoo per {len(self.last_empty)} titoli "
+                              "(delistati, ticker errato o limite di richieste)")
         return self._read(tickers, start)
 
     def get_full(self, tickers: list[str], start: str = FULL_START, read: bool = True) -> dict[str, pd.DataFrame]:

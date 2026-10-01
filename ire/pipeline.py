@@ -214,6 +214,8 @@ class Pipeline:
             s = self.fx.series_to_eur(s, cur)
             if s is not None and s.dropna().size > 500:
                 self.bench_eur, self.bench_name = s.dropna(), name
+                self.stats["benchmark_ticker"] = t
+                self.stats["benchmark_currency"] = cur
                 break
         self.say(f"   benchmark: {self.bench_name or 'non disponibile'}")
 
