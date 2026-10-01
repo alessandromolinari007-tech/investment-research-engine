@@ -21,16 +21,16 @@ import charts  # noqa: E402
 import data  # noqa: E402
 from ire.classify import SECTOR_IT  # noqa: E402
 from ire.glossary import GLOSSARY, KIND_IT, explain, fmt, label, money  # noqa: E402
-from ire.scoring import PILLARS  # noqa: E402
+from ire.scoring import (C_AVG, C_CHEAP, C_GROWTH, C_NODATA, C_QDET, C_QDISC, C_QFAIR, C_QFULL,  # noqa: E402
+                         C_REDFLAG, C_TEMP, C_TRAP, NEGATIVE_CLASSES, PILLARS, QUALITY_DISCOUNT)
 
 st.set_page_config(page_title="Investment Research Engine", page_icon="📈", layout="wide")
 
 SEV_ICON = {"severe": "🔴", "high": "🟠", "medium": "🟡", "info": "🔵", "data": "⚪"}
 SEV_IT = {"severe": "grave", "high": "alta", "medium": "media", "info": "informativa", "data": "qualità dati"}
 CLASS_ICON = {
-    "Qualità temporaneamente sottovalutata": "💎", "Qualità a sconto": "💎", "Qualità a prezzo ragionevole": "✅",
-    "Qualità a prezzo pieno": "🏷️", "Crescita costosa": "🚀", "Economica": "🔎", "Possibile value trap": "⚠️",
-    "Red flag: approfondire": "🚩", "Nella media": "➖", "Dati insufficienti": "❔",
+    C_TEMP: "💎", C_QDISC: "💎", C_QFAIR: "✅", C_QFULL: "🏷️", C_QDET: "📉", C_GROWTH: "🚀", C_CHEAP: "🔎",
+    C_TRAP: "⚠️", C_REDFLAG: "🚩", C_AVG: "➖", C_NODATA: "❔",
 }
 VERDICT_ICON = {"relativamente economica": "🟢", "ragionevolmente valutata": "⚪", "costosa": "🔴", "non determinabile": "❔"}
 DIRECTION = {m: d for p in PILLARS.values() for prof in p.values() for m, d, _ in prof}
@@ -98,7 +98,7 @@ def page_home():
   Valutazione (100 = molto economica) e Allocazione del capitale. 50 = nella media dei concorrenti.
 - Il **punteggio robusto** è la mediana di 5 combinazioni di pesi diverse: se una società è in alto solo con certi pesi,
   lo vedi dalla *stabilità della classifica*.
-- La **classificazione** distingue un'azienda *economica* da una *di qualità* e da una *di qualità temporaneamente sottovalutata*,
+- La **classificazione** distingue un'azienda *economica* da una *di qualità* e da una *di qualità a sconto rispetto ai pari*,
   e segnala le possibili **value trap** (economiche ma in deterioramento).
 - La **valutazione** (economica / ragionevole / costosa) combina 4 segnali indipendenti e dice quanti sono d'accordo (confidenza).
 - Il **reverse DCF** risponde a: *quanta crescita sta già pagando il prezzo attuale?*
@@ -128,12 +128,12 @@ def page_home():
             go_company(df.iloc[ev.selection.rows[0]]["company_id"])
 
     top = scored.sort_values("robust_score", ascending=False)
-    show(top[top.classification.isin(["Qualità temporaneamente sottovalutata", "Qualità a sconto"])].head(20),
-         "💎 Qualità a sconto", "Alta qualità, prezzo basso rispetto ai pari, nessun segno di deterioramento. Il punto di partenza per la ricerca.")
-    show(top[top.classification == "Qualità a prezzo ragionevole"].head(15),
+    show(top[top.classification.isin(QUALITY_DISCOUNT)].head(20),
+         "💎 Qualità a sconto vs pari", "Alta qualità, prezzo basso rispetto ai pari, nessun segno di deterioramento. Il punto di partenza per la ricerca.")
+    show(top[top.classification == C_QFAIR].head(15),
          "✅ Qualità a prezzo ragionevole", "Aziende eccellenti valutate nella media del settore.")
     big = top.sort_values("market_cap", ascending=False) if "market_cap" in top.columns else top
-    show(big[big.classification.isin(["Red flag: approfondire", "Possibile value trap"])].head(15),
+    show(big[big.classification.isin(NEGATIVE_CLASSES)].head(15),
          "🚩 Da maneggiare con cura (grandi società)", "Red flag gravi o apparente economicità con fondamentali in peggioramento.")
     st.divider()
     st.caption("Distribuzione delle classificazioni")
@@ -178,7 +178,7 @@ def page_company():
 
     k1, k2 = st.columns([1.1, 1])
     with k1:
-        cls = sc.get("classification") or "Dati insufficienti"
+        cls = sc.get("classification") or C_NODATA
         st.markdown(f"### {CLASS_ICON.get(cls, '')} {cls}")
         th = det.get("thesis") or {}
         st.write(th.get("headline", "").split(" — ", 1)[-1])

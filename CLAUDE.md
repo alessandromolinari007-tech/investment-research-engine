@@ -45,7 +45,7 @@ Ultimo run offline sintetico: soglia percentile abbassata 70→60, portafoglio c
 
 ### A metà
 - `price_meta.full_fetched_at` è nello schema e nella migrazione, ma `ire/prices.py` NON la usa ancora (§7, bug 1).
-- `app/app.py` e `ire/changes.py` usano ancora le VECCHIE etichette ("Qualità temporaneamente sottovalutata", "Qualità a sconto"): da allineare alle costanti di `ire/scoring.py`. Conseguenza: la sezione "💎" della Panoramica oggi resta sempre vuota. La UI non mostra ancora `status`, `constraints`, `turnover` e `exited` del portafoglio.
+- FATTO (blocco 1): `app/app.py` e `ire/changes.py` importano le costanti di classe da `ire/scoring.py`; la sezione "💎" della Panoramica si popola. Test di regressione in `tests/test_ui_labels.py`; fixture `world` spostata in `tests/conftest.py`. La UI non mostra ancora `status`, `constraints`, `turnover` e `exited` del portafoglio.
 - README minimale presente. `METHODOLOGY.md` NON esiste: è citato in `ire/normalize/sec_facts.py` e la tab Metodologia è vuota.
 
 ### Non ancora iniziato

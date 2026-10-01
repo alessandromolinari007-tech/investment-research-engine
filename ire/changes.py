@@ -5,6 +5,8 @@ import sqlite3
 
 import pandas as pd
 
+from ire.scoring import NEGATIVE_CLASSES
+
 METRIC_RULES = [
     # metric, threshold, direction (-1 = a decrease is bad), label, is_points
     ("gross_margin", 0.02, -1, "Margine lordo in calo", True),
@@ -44,7 +46,7 @@ def compute_changes(con: sqlite3.Connection, new_run: int, old_run: int) -> pd.D
             continue
         o = s0i.loc[cid]
         if r["classification"] != o["classification"]:
-            bad = r["classification"] in ("Red flag: approfondire", "Possibile value trap")
+            bad = r["classification"] in NEGATIVE_CLASSES
             add(cid, "Classificazione", f"{o['classification']} → {r['classification']}", "alta" if bad else "info")
         if r["valuation_verdict"] != o["valuation_verdict"] and r["valuation_verdict"] and o["valuation_verdict"]:
             add(cid, "Valutazione", f"{o['valuation_verdict']} → {r['valuation_verdict']}", "info")
