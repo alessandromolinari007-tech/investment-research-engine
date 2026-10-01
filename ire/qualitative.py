@@ -75,9 +75,14 @@ def filings_flags(company_id: str, cik: str, sub: dict[str, Any], months: int = 
 # ---------------------------------------------------------------- text analysis
 def html_to_text(html: str) -> str:
     try:
-        from bs4 import BeautifulSoup
+        import warnings
 
-        soup = BeautifulSoup(html, "lxml")
+        from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+
+        with warnings.catch_warnings():
+            # SEC documents are often XHTML/iXBRL: HTML parsing is intended (we only need the visible text)
+            warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+            soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style"]):
             tag.decompose()
         # hidden iXBRL header

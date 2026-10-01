@@ -25,6 +25,8 @@ from ..config import load_config
 WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 EMPTY_RETRY_SHARE = 0.5     # more than this share of a price batch empty → probably rate-limited: wait and retry
 EMPTY_RETRIES = 2
+FINAL_RETRY_MAX = 500          # tickers retried one last time at the end of download_prices
+FINAL_RETRY_PAUSE_S = 15
 
 SUBUNIT_CURRENCIES = {"GBp": ("GBP", 100.0), "GBX": ("GBP", 100.0), "ZAc": ("ZAR", 100.0), "ILA": ("ILS", 100.0)}
 
@@ -193,6 +195,13 @@ def download_prices(tickers: list[str], start: str = "2014-01-01", batch: int = 
             THROTTLE.error()
             time.sleep(30 * (attempt + 1))
             todo = empty
+    # last recovery pass: isolated failures (Yahoo "Invalid Crumb" / "no timezone found" on valid tickers such as
+    # NOVO.CO or ROG.SW in a real run) do not trigger the batch retry above; retry them once in small batches
+    left = [t for t in tickers if t not in out]
+    if left and len(tickers) > 1 and len(left) <= FINAL_RETRY_MAX:
+        time.sleep(FINAL_RETRY_PAUSE_S)
+        for j in range(0, len(left), 10):
+            out.update(_download_chunk(left[j : j + 10], start, actions))
     return out
 
 

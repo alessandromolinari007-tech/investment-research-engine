@@ -362,7 +362,8 @@ def compute_fundamental_metrics(
         m.add("altman_z", z[0], "calculated", fy_label(last_fy),
               "Altman Z = 1.2·CCN/A + 1.4·UtiliTrattenuti/A + 3.3·EBIT/A + 0.6·Cap/Passività + 1.0·Ricavi/A "
               "(<1.8 zona di stress; pensato per aziende industriali)", **z[1])
-        bm = _beneish(a)
+        with np.errstate(divide="ignore", invalid="ignore"):    # NaN ratios are handled inside
+            bm = _beneish(a)
         m.add("beneish_m", bm[0], "calculated", fy_label(last_fy),
               "Beneish M-score (8 variabili). > −1.78 = profilo contabile simile a casi di manipolazione "
               "(molti falsi positivi, specie in aziende in forte crescita)", **bm[1])

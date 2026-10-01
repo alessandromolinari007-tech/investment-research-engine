@@ -8,9 +8,9 @@ Specifica originale completa: file `attachment.txt` caricato dall'utente nella p
 
 ## 2. Stato attuale (aggiornato al 2026-10-01)
 Repository: https://github.com/alessandromolinari007-tech/investment-research-engine (ramo `main`). Visibilità del repo: da verificare.
-Test offline: `python -m pytest -q` → 125 passed (Python 3.11, sandbox cloud). `pytest.ini` limita la raccolta a `tests/`.
+Test offline: `python -m pytest -q` → 126 passed (Python 3.11, sandbox cloud). `pytest.ini` limita la raccolta a `tests/`.
 UI: `scripts/dev_offline_run.py` + `scripts/dev_ui_test.py` → 7 pagine su 7 senza eccezioni (DB sintetico).
-Test end-to-end con dati REALI: MAI eseguito. Python 3.12 autorizzato dall'utente (lo installa lui con winget); l'utente lancia `first_run_test.bat` e riporta `logs\first_run.log`.
+Test end-to-end con dati REALI: eseguito il 2026-10-01 sul PC, ma con la COPIA VECCHIA `C:\Users\aless\source\investment-engine` (9 test, codice precedente a questa sessione): completato in 58,8 min, modalità quick, 885 società, tutte le fonti raggiungibili, 783 con punteggio, portafoglio di 20. Da ripetere con la versione attuale (clone `%USERPROFILE%\ire-pulizia` o nuovo download). Python 3.12 autorizzato dall'utente (lo installa lui con winget); l'utente lancia `first_run_test.bat` e riporta `logs\first_run.log`.
 
 ### Fatto in questa sessione (commit e3111be → 328f4b6 + successivi)
 - Blocco 1: `app/app.py` e `ire/changes.py` usano le costanti di classe di `ire/scoring.py` (sezione 💎 non più vuota).
@@ -115,6 +115,7 @@ Aperti / limitazioni dichiarate (in METHODOLOGY.md §13):
 Riverifica (2 subagenti indipendenti): confermate quasi tutte le correzioni; 17 rilievi residui (cambi Yahoo mai riscaricati, split frazionari che nascondevano la diluizione, 403 SEC classificato come User-Agent, storico misto se il riscaricamento fallisce, leasing per anno, allentamento tutto su un titolo, mediane, decimali italiani, ecc.) corretti nel commit "Red team 2 (parte 4)".
 
 ## 8. Prossimi passi (in ordine)
+0. Dal log reale: Yahoo restituisce errori isolati (401 "Invalid Crumb", "no timezone found") anche su titoli validi (NOVO.CO, ROG.SW, MAERSK.CO): aggiunto un passaggio finale di recupero in `yahoo.download_prices`. Metadati Yahoo ≈ 0,6 s per titolo (24 min per 2.327 titoli in quick).
 1. Chiudere i rilievi della riverifica del red team 2 (se presenti) con test; pytest + dev_offline_run + dev_ui_test verdi; commit e push.
 2. Quando l'utente incolla `logs\first_run.log` dal PC: correggere ciò che emerge dai dati reali (SEC, Yahoo, BCE, FRED, Wikipedia), con test che riproducono il caso senza rete.
 3. Poi `run_quick_test.bat` → `run_app.bat` sul PC e correzioni.

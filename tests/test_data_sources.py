@@ -326,3 +326,20 @@ def test_sec_rate_limit_page_is_not_a_user_agent_error(tmp_path, monkeypatch):
     with pytest.raises(H.SourceUnavailable) as e:
         c.get("https://data.sec.gov/api/xbrl/companyfacts/CIK0000000001.json", max_retries=2)
     assert "limite di richieste" in str(e.value) and "User-Agent" not in str(e.value)
+
+
+def test_isolated_empty_ticker_is_retried_at_the_end(monkeypatch):
+    """Real run (old version): valid tickers like NOVO.CO came back empty ("no timezone found") in batches where
+    most tickers were fine, so the batch retry never fired and they were excluded from the universe."""
+    calls = []
+
+    def chunk(tickers, start, actions):
+        calls.append(list(tickers))
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        df = pd.DataFrame({"close": 1.0, "adj_close": 1.0, "volume": 1.0}, index=idx)
+        return {t: df for t in tickers if not (t == "NOVO.CO" and len(calls) == 1)}
+
+    monkeypatch.setattr(Y, "_download_chunk", chunk)
+    monkeypatch.setattr(Y.time, "sleep", lambda s: None)
+    out = Y.download_prices([f"T{i}" for i in range(9)] + ["NOVO.CO"], start="2025-01-01")
+    assert "NOVO.CO" in out and calls[-1] == ["NOVO.CO"]
