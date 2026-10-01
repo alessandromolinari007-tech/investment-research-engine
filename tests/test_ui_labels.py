@@ -96,3 +96,12 @@ def test_failed_run_is_visible(world):
     at = _page("home")
     assert not at.exception
     assert any("fallita" in w.value and "SEC non raggiungibile" in w.value for w in at.warning)
+
+
+def test_methodology_tab_shows_document(world):
+    from ire.pipeline import Pipeline
+
+    Pipeline(mode="quick", verbose=False).run()
+    at = _page("data")
+    assert not at.exception
+    assert any("# Metodologia" in m.value for m in at.markdown)

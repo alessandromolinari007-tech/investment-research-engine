@@ -45,11 +45,11 @@ Ultimo run offline sintetico: soglia percentile abbassata 70→60, portafoglio c
 
 ### A metà
 - FATTO (blocco 1): `app/app.py` e `ire/changes.py` importano le costanti di classe da `ire/scoring.py`; la sezione "💎" della Panoramica si popola. Test di regressione in `tests/test_ui_labels.py`; fixture `world` spostata in `tests/conftest.py`. La UI non mostra ancora `status`, `constraints`, `turnover` e `exited` del portafoglio.
-- README minimale presente. `METHODOLOGY.md` NON esiste: è citato in `ire/normalize/sec_facts.py` e la tab Metodologia è vuota.
+- FATTO (blocco 3): `METHODOLOGY.md` in italiano (mostrato nella tab Metodologia), README completato, glossario senza voci vuote.
 
 ### Non ancora iniziato
 - Test end-to-end con dati REALI (mai eseguito: SEC/Yahoo/FRED/BCE/Wikipedia non raggiungibili dal sandbox cloud, proxy 403).
-- Test unitari per scoring, valutazione, qualitativa, classificazione, vincoli di portafoglio.
+- FATTO (blocco 3): test unitari in `tests/test_methodology.py` (scoring, classificazione, verdetto/confidenza, reverse DCF, testo dei filing, vincoli e stato del portafoglio).
 - Secondo ciclo di red team (obbligatorio da specifica).
 - Report finale all'utente (§6).
 

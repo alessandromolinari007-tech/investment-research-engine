@@ -96,6 +96,45 @@ GLOSSARY: dict[str, tuple[str, str, str]] = {
     "data_age_days": ("Età dell'ultimo bilancio (giorni)", "num", ""),
 }
 
+# explanations for entries whose description above is empty (shown in the UI next to each metric)
+_MORE = {
+    "gross_margin_5y_median": "Valore tipico del margine lordo negli ultimi 5 anni: meno sensibile a un singolo anno anomalo.",
+    "op_margin_5y_median": "Valore tipico del margine operativo negli ultimi 5 anni: riferimento per capire se oggi è alto o basso.",
+    "revenue_cagr_3y": "Di quanto sono cresciuti i ricavi in media ogni anno negli ultimi 3 anni.",
+    "revenue_cagr_10y": "Di quanto sono cresciuti i ricavi in media ogni anno negli ultimi 10 anni.",
+    "gross_profit_cagr_5y": "Crescita annua media dell'utile lordo: crescita dei ricavi che porta con sé anche margine.",
+    "revenue_growth_last_fy": "Variazione dei ricavi nell'ultimo anno fiscale rispetto all'anno prima.",
+    "eps_cagr_5y": "Crescita annua media dell'utile per azione: tiene conto anche di riacquisti e diluizioni.",
+    "ni_cagr_5y": "Crescita annua media dell'utile netto (usata per banche e assicurazioni).",
+    "fcf_ps_cagr_5y": "Crescita annua media della cassa libera per azione: è ciò che spetta davvero a ogni azione.",
+    "fcf_cagr_5y": "Crescita annua media del free cash flow totale.",
+    "bvps_cagr_5y": "Crescita annua media del patrimonio netto per azione (misura di crescita per le banche).",
+    "debt_equity": "Debito finanziario diviso patrimonio netto. Più alto = l'azienda si finanzia più a debito.",
+    "goodwill_to_assets": "Quota dell'attivo fatta di avviamento e intangibili acquisiti: alta = crescita per acquisizioni, rischio di svalutazioni.",
+    "share_change_cagr_3y": "Variazione annua media del numero di azioni in 3 anni. Positivo = diluizione, negativo = riacquisti.",
+    "sbc_to_fcf": "Compensi in azioni rispetto alla cassa libera: quanta parte della cassa 'va' ai dipendenti in azioni.",
+    "payout_ratio": "Quota dell'utile distribuita come dividendo. Sopra 100% il dividendo supera gli utili.",
+    "fcf_payout": "Quota della cassa libera distribuita come dividendo. Sopra 100% il dividendo non è coperto dalla cassa.",
+    "buyback_to_fcf_5y": "Quota della cassa libera usata per riacquistare azioni negli ultimi 5 anni.",
+    "capex_to_da": "Investimenti diviso ammortamenti. Sopra 1 l'azienda investe più di quanto si consuma (crescita); molto sotto 1 per anni può indicare sotto-investimento.",
+    "pe_hist_median": "P/E tipico della società negli anni passati (a fine anno fiscale): termine di confronto per il P/E di oggi.",
+    "ev_ebit_vs_history_pct": "Dove si colloca l'EV/EBIT di oggi rispetto agli anni passati della società (0% = mai così basso, 100% = mai così alto).",
+    "p_fcf_vs_history_pct": "Dove si colloca il prezzo/FCF di oggi rispetto agli anni passati della società (0% = mai così basso).",
+    "ps_vs_history_pct": "Dove si colloca il prezzo/ricavi di oggi rispetto agli anni passati della società (0% = mai così basso).",
+    "vol_3y": "Quanto oscilla il titolo (deviazione standard annualizzata dei rendimenti giornalieri in euro, 3 anni).",
+    "max_drawdown_10y": "La perdita più grande da un massimo al minimo successivo negli ultimi 10 anni (in euro).",
+    "drawdown_from_52w_high": "Quanto il prezzo attuale è sotto il massimo delle ultime 52 settimane.",
+    "drawdown_from_3y_high": "Quanto il prezzo attuale è sotto il massimo degli ultimi 3 anni.",
+    "momentum_12_1": "Rendimento degli ultimi 12 mesi escluso l'ultimo mese: misura la tendenza recente del prezzo.",
+    "return_1y": "Rendimento totale (dividendi inclusi) degli ultimi 12 mesi, convertito in euro.",
+    "return_5y_ann": "Rendimento totale annuo medio degli ultimi 5 anni, dividendi inclusi, in euro.",
+    "years_of_data": "Quanti anni di bilanci annuali sono disponibili: con pochi anni le metriche di crescita e stabilità sono poco affidabili.",
+    "data_age_days": "Giorni trascorsi dalla fine del periodo dell'ultimo bilancio disponibile.",
+}
+for _k, _e in _MORE.items():
+    if _k in GLOSSARY and not GLOSSARY[_k][2]:
+        GLOSSARY[_k] = (GLOSSARY[_k][0], GLOSSARY[_k][1], _e)
+
 KIND_IT = {"observed": "dato osservato", "calculated": "calcolato", "estimate": "stima (modello)",
            "third_party_estimate": "stima di terzi", "assumption": "assunzione"}
 
