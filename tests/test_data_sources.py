@@ -374,3 +374,50 @@ def test_seed_list_is_in_the_repository():
     assert SEED_PATH.exists()
     df = load_seed()
     assert len(df) > 600 and {"ticker", "index"} <= set(df.columns)
+
+
+def test_public_float_prefilter_skips_price_downloads(world, monkeypatch):
+    """Real run 2026-10-01: prices of 6940 tickers were downloaded (24 min) to keep 889. US companies whose SEC
+    public float is far below the cap threshold are now dropped BEFORE any Yahoo request."""
+    import ire.sources.sec as S
+    import ire.universe as U
+    from ire.config import load_config
+    from ire.pipeline import Pipeline
+
+    small, big = world.us[0], world.us[1]
+    min_mcap = load_config().min_market_cap_usd("quick")
+
+    def frame(tax, concept, unit, period):
+        if concept != "EntityPublicFloat":
+            return []
+        return [{"cik": int(small["cik"]), "end": "2025-06-30", "val": 0.05 * min_mcap},
+                {"cik": int(big["cik"]), "end": "2025-06-30", "val": 0.5 * min_mcap}]
+
+    monkeypatch.setattr(S, "frame", frame)
+    asked: list[str] = []
+    real = world.download_prices
+
+    def spy(tickers, *a, **k):
+        asked.extend(tickers)
+        return real(tickers, *a, **k)
+
+    import ire.sources.yahoo as Y
+    monkeypatch.setattr(Y, "download_prices", spy)
+    p = Pipeline(mode="quick", verbose=False)
+    p.stage_macro()
+    from ire.prices import PriceStore
+    cands, report = U.build_universe(p.fx, "quick", PriceStore(p.con, progress=lambda m: None), progress=lambda m: None)
+    by = {c.ticker: c for c in cands}
+    assert "flottante" in by[small["ticker"]].exclusion
+    assert small["ticker"] not in asked and big["ticker"] in asked
+    assert not (by[big["ticker"]].exclusion or "").startswith("flottante")
+    assert any("Pre-filtro flottante" in s for s in report["steps"])
+
+
+def test_public_float_prefilter_keeps_forced_and_unknown():
+    from ire.universe import Candidate, public_float_prefilter
+
+    cands = [Candidate(ticker="A", source="SEC", cik="1"), Candidate(ticker="B", source="SEC", cik="2", forced=True),
+             Candidate(ticker="C", source="SEC", cik="3"), Candidate(ticker="D", source="INTL")]
+    n = public_float_prefilter(cands, {1: 1e6, 2: 1e6, 3: 0.0}, 2e9)
+    assert n == 1 and cands[0].exclusion and not any(c.exclusion for c in cands[1:])

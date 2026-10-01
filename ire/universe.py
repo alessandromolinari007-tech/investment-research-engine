@@ -26,6 +26,11 @@ from .sources import sec, universe_intl, yahoo
 from .sources.fx_macro import FxTable
 
 US_EXCHANGES = {"NYSE", "Nasdaq", "NYSE American", "NYSE MKT"}
+# US companies with a public float below this share of the market-cap threshold are dropped before any price
+# download. Decision (real run of 2026-10-01): 0.10 keeps every company whose float is within 10x of the threshold
+# (covers controlled companies with a small free float and a 15-month-old measurement); in quick mode it removes
+# floats < 2 bn $.
+PUBLIC_FLOAT_PREFILTER = 0.10
 BAD_TICKER = re.compile(r"(-P[A-Z]?$|-W$|-WS$|-WT$|-U$|-UN$|-R$|-RT$|\^)")
 
 
@@ -144,12 +149,22 @@ def build_universe(fx: FxTable, mode: str, price_cache, progress: Callable[[str]
     if limit:
         cands = [c for c in cands if c.forced] + [c for c in cands if not c.forced][:limit]
 
+    # ------------------------------------------------------------------ US pre-filter on SEC public float
+    # (real run: 6033 SEC companies, mostly small; downloading their prices only to discard them took ~20 min)
+    if any(c.source == "SEC" for c in cands):
+        floats = _frames_public_float()
+        if floats:
+            n = public_float_prefilter(cands, floats, min_mcap)
+            report["steps"].append(f"Pre-filtro flottante SEC (dei:EntityPublicFloat): {n} società USA escluse "
+                                   f"prima di scaricare i prezzi")
+
     # ------------------------------------------------------------------ liquidity (bulk prices, 3 months)
-    progress(f"Controllo liquidità di {len(cands)} titoli (prezzi ultimi 3 mesi)…")
+    todo = [c for c in cands if not c.exclusion]
+    progress(f"Controllo liquidità di {len(todo)} titoli (prezzi ultimi 3 mesi)…")
     start = (pd.Timestamp.today() - pd.Timedelta(days=100)).strftime("%Y-%m-%d")
-    prices = price_cache.get_recent([c.ticker for c in cands], start=start)
+    prices = price_cache.get_recent([c.ticker for c in todo], start=start)
     # currency unknown before `info`; US tickers are USD, international resolved after info
-    for c in cands:
+    for c in todo:
         df = prices.get(c.ticker)
         if df is None or df.empty:
             c.exclusion = "nessun prezzo su Yahoo (ticker non valido, delistato o non supportato)"
@@ -253,15 +268,15 @@ def _yahoo_mcap_main_unit(info: dict[str, Any], price_main: float | None) -> flo
     return float(rep) if rep else None
 
 
-def _frames_shares() -> dict[int, float]:
-    """Latest dei:EntityCommonStockSharesOutstanding per CIK from the last 4 quarterly frames."""
+def _frames_latest(concept: str, unit: str, quarters: int) -> dict[int, float]:
+    """Latest value of a dei: cover-page fact per CIK, from the last `quarters` quarterly instant frames."""
     today = pd.Timestamp.today()
     out: dict[int, tuple[str, float]] = {}
-    for back in range(1, 5):
+    for back in range(1, quarters + 1):
         q = (today - pd.DateOffset(months=3 * back))
         period = f"CY{q.year}Q{(q.month - 1) // 3 + 1}I"
         try:
-            data = sec.frame("dei", "EntityCommonStockSharesOutstanding", "shares", period)
+            data = sec.frame("dei", concept, unit, period)
         except Exception:  # noqa: BLE001
             data = []
         for d in data:
@@ -270,6 +285,36 @@ def _frames_shares() -> dict[int, float]:
             if cik and (cik not in out or end > out[cik][0]):
                 out[cik] = (end, float(d.get("val", 0)))
     return {k: v[1] for k, v in out.items()}
+
+
+def _frames_shares() -> dict[int, float]:
+    """Latest dei:EntityCommonStockSharesOutstanding per CIK from the last 4 quarterly frames."""
+    return _frames_latest("EntityCommonStockSharesOutstanding", "shares", 4)
+
+
+def _frames_public_float() -> dict[int, float]:
+    """Latest dei:EntityPublicFloat (USD, measured at the end of the 2nd fiscal quarter, reported in the 10-K)
+    per CIK. Six quarters back: in October the latest value of a December filer is still the one of June
+    of the PREVIOUS year."""
+    return _frames_latest("EntityPublicFloat", "USD", 6)
+
+
+def public_float_prefilter(cands: list[Candidate], floats: dict[int, float], min_mcap: float) -> int:
+    """Excludes US candidates whose public float is far below the market-cap threshold, BEFORE any Yahoo request.
+
+    The float is at most the market cap and can be up to ~15 months old, so the cut is deliberately loose
+    (PUBLIC_FLOAT_PREFILTER × threshold): a company is dropped only if even a large rise and a small free float
+    could not bring it near the threshold. Missing or non-positive floats are kept (decided later on real
+    prices). Returns the number of exclusions."""
+    n = 0
+    for c in cands:
+        if c.source != "SEC" or c.forced or c.exclusion or not c.cik:
+            continue
+        fl = floats.get(int(c.cik))
+        if fl and fl > 0 and fl < PUBLIC_FLOAT_PREFILTER * min_mcap:
+            c.exclusion = f"flottante dichiarato alla SEC {_fmt_usd(fl)}: capitalizzazione certamente sotto la soglia"
+            n += 1
+    return n
 
 
 def _dedupe(cands: list[Candidate]) -> None:

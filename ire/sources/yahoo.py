@@ -13,6 +13,7 @@ Caveats (documented in the UI):
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -44,6 +45,9 @@ def yf():
             yfinance.set_tz_cache_location(str(cache))
         except Exception:
             pass
+        # yfinance logs every missing ticker twice ("possibly delisted; no timezone found"): hundreds of lines in
+        # the real log. The pipeline reports the missing tickers itself (prices.PriceStore.last_empty).
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
         _yf = yfinance
     return _yf
 

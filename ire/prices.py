@@ -77,7 +77,7 @@ class PriceStore:
                               "lo storico completo verrà riscaricato")
             if self.last_empty:
                 self.progress(f"  nessun prezzo recente ricevuto da Yahoo per {len(self.last_empty)} titoli "
-                              "(delistati, ticker errato o limite di richieste)")
+                              f"(delistati, ticker errato o limite di richieste): {_sample(self.last_empty)}")
         return self._read(tickers, start)
 
     def get_full(self, tickers: list[str], start: str = FULL_START, read: bool = True) -> dict[str, pd.DataFrame]:
@@ -97,7 +97,8 @@ class PriceStore:
             self._full(full, start)
         if self.last_empty:
             self.progress(f"  nessun prezzo ricevuto da Yahoo per {len(self.last_empty)} titoli "
-                          "(delistati, ticker errato o limite di richieste): verranno ritentati al prossimo avvio")
+                          f"(delistati, ticker errato o limite di richieste): verranno ritentati al prossimo avvio: "
+                          f"{_sample(self.last_empty)}")
         return self._read(tickers, start) if read else {}
 
     def set_currency(self, ticker: str, currency_raw: str | None) -> None:
@@ -267,3 +268,9 @@ def main_unit(df: pd.DataFrame, divisor: float | None) -> pd.DataFrame:
         if c in out.columns:
             out[c] = out[c] / d
     return out
+
+
+def _sample(tickers: list[str], n: int = 25) -> str:
+    """Short list for the log: the first `n` tickers, then the count of the others."""
+    head = ", ".join(tickers[:n])
+    return head + (f" e altri {len(tickers) - n}" if len(tickers) > n else "")
