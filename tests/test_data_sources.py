@@ -343,3 +343,12 @@ def test_isolated_empty_ticker_is_retried_at_the_end(monkeypatch):
     monkeypatch.setattr(Y.time, "sleep", lambda s: None)
     out = Y.download_prices([f"T{i}" for i in range(9)] + ["NOVO.CO"], start="2025-01-01")
     assert "NOVO.CO" in out and calls[-1] == ["NOVO.CO"]
+
+
+def test_missing_seed_list_does_not_stop_the_run(tmp_path, monkeypatch):
+    import ire.sources.universe_intl as U
+
+    monkeypatch.setattr(U, "SEED_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(U, "scrape_index", lambda idx: ["AAA" + idx.suffix] if idx.suffix == ".MI" else [])
+    df, notes = U.international_candidates()
+    assert len(df) >= 1 and any("non trovata" in n for n in notes)

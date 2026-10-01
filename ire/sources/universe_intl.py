@@ -113,7 +113,12 @@ def load_seed() -> pd.DataFrame:
 def international_candidates(use_wikipedia: bool = True) -> tuple[pd.DataFrame, list[str]]:
     """Returns (DataFrame[ticker, index, source], notes)."""
     notes: list[str] = []
-    frames = [load_seed()]
+    frames = []
+    if SEED_PATH.exists():
+        frames.append(load_seed())
+    else:
+        notes.append(f"ATTENZIONE: lista seed {SEED_PATH.name} non trovata: titoli internazionali solo dagli indici "
+                     "di Wikipedia (gli indici non raggiungibili restano scoperti)")
     if use_wikipedia:
         for idx in INDICES:
             syms = scrape_index(idx)
@@ -121,7 +126,10 @@ def international_candidates(use_wikipedia: bool = True) -> tuple[pd.DataFrame, 
                 frames.append(pd.DataFrame({"ticker": syms, "index": idx.name, "source": f"Wikipedia: {idx.url}"}))
                 notes.append(f"{idx.name}: {len(syms)} titoli da Wikipedia")
             else:
-                notes.append(f"{idx.name}: Wikipedia non utilizzabile, uso lista seed")
+                notes.append(f"{idx.name}: Wikipedia non utilizzabile, uso lista seed"
+                             + ("" if SEED_PATH.exists() else " (NON disponibile: indice scoperto)"))
+    if not frames:
+        return pd.DataFrame(columns=["ticker", "index", "source"]), notes
     df = pd.concat(frames, ignore_index=True)
     # keep one row per ticker; prefer Wikipedia label (fresher) over seed
     df["prio"] = df["source"].str.startswith("Wikipedia").map({True: 0, False: 1})

@@ -1,6 +1,6 @@
 # dati scaricati, cache e database locali (mai su GitHub)
-data/
-logs/
+/data/
+/logs/
 *.db
 *.sqlite
 *.sqlite-wal

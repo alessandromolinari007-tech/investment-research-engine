@@ -25,8 +25,22 @@ def _cfg(tmp_path, replace=None, local=None):
     return p
 
 
-def test_repo_config_is_valid_and_has_no_contact():
-    cfg = C.load_config(ROOT / "config.toml")
+def test_repo_config_is_valid_and_has_no_contact(tmp_path):
+    """Checks the COMMITTED config.toml (what is on GitHub), not the user's local copy, which may legitimately
+    contain the SEC contact on their PC."""
+    import shutil
+    import subprocess
+
+    committed = None
+    if shutil.which("git") and (ROOT / ".git").exists():
+        r = subprocess.run(["git", "-C", str(ROOT), "show", "HEAD:config.toml"], capture_output=True)
+        if r.returncode == 0:
+            committed = r.stdout
+    if committed is None:
+        pytest.skip("repository git non disponibile")
+    p = tmp_path / "config.toml"
+    p.write_bytes(committed)
+    cfg = C.load_config(p)
     assert cfg.get("sec.user_agent") == ""            # the SEC contact never goes on GitHub
     assert "config.local.toml" in (ROOT / ".gitignore").read_text(encoding="utf-8")
 
