@@ -1,0 +1,21 @@
+# Aspetto dell'interfaccia (Streamlit). Stile editoriale: base calda chiara, un solo colore d'accento.
+[theme]
+base = "light"
+primaryColor = "#256abf"
+backgroundColor = "#f7f6f3"
+secondaryBackgroundColor = "#efede8"
+textColor = "#1f1e1c"
+linkColor = "#1c5cab"
+borderColor = "#e3e0d8"
+showWidgetBorder = true
+baseRadius = "6px"
+font = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"
+codeFont = "Geist Mono:https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap"
+dataframeHeaderBackgroundColor = "#efede8"
+chartCategoricalColors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

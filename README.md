@@ -18,7 +18,7 @@ usando solo dati pubblici e gratuiti (SEC EDGAR XBRL, Yahoo Finance via `yfinanc
 - ricerca di red flag nei filing (going concern, debolezze nei controlli, restatement, eventi 8-K…);
 - portafoglio proposto con vincoli di peso, settore, area e correlazione, ruolo e motivazione per ogni titolo;
 - confronto tra un'analisi e la precedente (cosa è cambiato, cosa è peggiorato);
-- interfaccia web in italiano (Streamlit).
+- interfaccia web in italiano (Streamlit), stile editoriale sobrio: tema in `.streamlit/config.toml`, stile in `app/ui.py`.
 
 ## Uso rapido (Windows)
 1. Installa Python 3.12: `winget install Python.Python.3.12` (oppure da python.org, spunta "Add to PATH").

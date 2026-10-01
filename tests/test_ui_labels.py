@@ -12,17 +12,24 @@ CLASS_CONSTANTS = {k: v for k, v in vars(S).items() if re.fullmatch(r"C_[A-Z]+",
 
 
 def test_no_duplicated_class_strings():
-    for rel in ("app/app.py", "app/data.py", "ire/changes.py", "ire/portfolio.py", "ire/thesis.py"):
+    for rel in ("app/app.py", "app/data.py", "app/ui.py", "ire/changes.py", "ire/portfolio.py", "ire/thesis.py"):
         src = (ROOT / rel).read_text(encoding="utf-8")
         for name, value in CLASS_CONSTANTS.items():
             assert f'"{value}"' not in src, f"{rel} duplica l'etichetta {name}: importare la costante"
 
 
-def test_every_class_has_an_icon():
-    src = (ROOT / "app/app.py").read_text(encoding="utf-8")
-    block = src[src.index("CLASS_ICON = {"):src.index("}", src.index("CLASS_ICON = {"))]
-    for name in CLASS_CONSTANTS:
-        assert f"{name}:" in block, f"CLASS_ICON senza {name}"
+def test_every_class_has_a_badge():
+    import importlib
+    import sys
+
+    sys.path.insert(0, str(ROOT / "app"))
+    ui = importlib.import_module("ui")
+    assert set(CLASS_CONSTANTS.values()) <= set(ui.CLASS_BADGE)
+
+
+def test_no_emoji_in_the_interface():
+    src = (ROOT / "app/app.py").read_text(encoding="utf-8") + (ROOT / "app/ui.py").read_text(encoding="utf-8")
+    assert not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50]", src)
 
 
 def test_home_quality_discount_section_is_filled(world):
@@ -41,7 +48,7 @@ def test_home_quality_discount_section_is_filled(world):
     at = _page("home")
     assert not at.exception, [e.value for e in at.exception]
     assert len(at.dataframe) == expected_tables
-    assert any(s.value.startswith("💎") for s in at.subheader)
+    assert any("Qualità a sconto vs pari" in m.value for m in at.markdown)
 
 
 def _page(page: str, monkeypatch=None):

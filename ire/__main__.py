@@ -158,7 +158,8 @@ def _dispatch(a) -> None:
         print("Per fermarla chiudi questa finestra.")
         proc = subprocess.Popen([sys.executable, "-m", "streamlit", "run", os.path.join(here, "app", "app.py"),
                                  "--server.headless", "true", "--server.port", str(port),
-                                 "--server.address", "127.0.0.1", "--browser.gatherUsageStats", "false"])
+                                 "--server.address", "127.0.0.1", "--browser.gatherUsageStats", "false"],
+                                cwd=here)        # .streamlit/config.toml (theme) is read from the project folder
         if _wait_http(url, proc, timeout=120):
             print(f"Pronta: {url}  (se il browser non si apre, copia questo indirizzo nel browser)")
             webbrowser.open(url)
