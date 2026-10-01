@@ -1,0 +1,12 @@
+# dati scaricati, cache e database locali (mai su GitHub)
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.streamlit/secrets.toml

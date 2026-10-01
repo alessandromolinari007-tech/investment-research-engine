@@ -1,0 +1,97 @@
+# =====================================================================
+#  Investment Research Engine — configurazione
+#  Modifica questo file con un editor di testo. Ogni valore è commentato.
+# =====================================================================
+
+[general]
+# Valuta in cui vengono calcolati rendimenti, volatilità e statistiche di portafoglio.
+# Sei un investitore in euro: il rischio di cambio USD/EUR è un rischio reale per te.
+base_currency = "EUR"
+# Cartella dati (database SQLite + cache dei file scaricati)
+data_dir = "data"
+
+[sec]
+# La SEC richiede OBBLIGATORIAMENTE un User-Agent con nome ed email di contatto.
+# Esempio: "Mario Rossi mario.rossi@example.com". Senza, la SEC blocca le richieste.
+user_agent = ""
+# Limite SEC: max 10 richieste/secondo. Restiamo prudenti.
+max_requests_per_second = 8
+
+[universe]
+# quick    = solo grandi società (>= 20 mld $) → primo test, ~15-25 minuti
+# standard = società >= 2 mld $ liquide → uso normale, 1-2 ore la prima volta
+# full     = società >= 300 mln $ → lento, dati di qualità inferiore sulle small cap
+mode = "standard"
+include_us = true
+include_international = true
+# Liquidità minima: mediana del controvalore scambiato giornaliero (USD) sugli ultimi 3 mesi
+min_median_dollar_volume_usd = 2_000_000
+
+[universe.min_market_cap_usd]
+quick = 20_000_000_000
+standard = 2_000_000_000
+full = 300_000_000
+
+[cache]
+# Giorni prima di riscaricare i bilanci (i bilanci cambiano ogni trimestre)
+fundamentals_ttl_days = 7
+# Ore prima di riscaricare i prezzi
+prices_ttl_hours = 20
+# Giorni prima di riscaricare elenco filing / testo dei 10-K
+filings_ttl_days = 7
+
+[valuation]
+# Premio per il rischio azionario usato nel reverse DCF (ASSUNZIONE, non un dato)
+equity_risk_premium = 0.05
+# Crescita perpetua dopo l'orizzonte esplicito (ASSUNZIONE)
+terminal_growth = 0.025
+# Anni di crescita esplicita nel reverse DCF
+dcf_years = 10
+
+[scoring]
+# Numero minimo di società nel settore per usare il confronto settoriale
+# (sotto questa soglia: banche/assicurazioni confrontate con tutta la finanza,
+#  le altre con l'intero universo non finanziario)
+min_peer_group = 8
+# Numero di società (migliori per punteggio robusto) su cui fare l'analisi
+# approfondita dei filing SEC (testo 10-K, 8-K, confronto fonti)
+deep_analysis_top_n = 150
+# Oltre ai primi N si analizzano TUTTE le società candidabili al portafoglio, fino a questo massimo
+deep_analysis_max = 400
+
+# Pesi del punteggio composito (somma = 1). Il sistema calcola anche 4 schemi
+# alternativi e usa la MEDIANA: nessuno schema singolo decide la classifica.
+[scoring.weights]
+quality = 0.30
+valuation = 0.25
+financial_strength = 0.20
+growth = 0.15
+capital_allocation = 0.10
+
+[portfolio]
+target_positions = 20
+max_weight = 0.08
+min_weight = 0.025
+max_sector_weight = 0.25
+# Correlazione massima ammessa tra due titoli (rendimenti settimanali 3 anni, in EUR)
+max_pair_correlation = 0.80
+# Penalità di correlazione nella selezione greedy (0 = ignora le correlazioni)
+correlation_penalty = 0.5
+# Percentile minimo del punteggio robusto per essere candidato
+min_robust_percentile = 70
+# Numero minimo di titoli: sotto questa soglia il portafoglio NON viene proposto (troppo concentrato)
+min_positions = 12
+# Bonus di punteggio ai titoli già nel portafoglio precedente (riduce rotazione e costi; 0 = nessuno)
+holding_bonus = 3.0
+# Variazioni di peso inferiori a questa soglia vengono ignorate (banda di non intervento)
+no_trade_band = 0.015
+# Settimane di prezzi richieste negli ultimi 3 anni (su 156) per stimare volatilità e correlazioni
+min_weeks_3y = 130
+
+[portfolio.max_region_weight]
+"Nord America" = 0.65
+"Europa" = 0.45
+"Regno Unito" = 0.20
+"Giappone" = 0.20
+"Asia-Pacifico" = 0.20
+"Altro" = 0.10

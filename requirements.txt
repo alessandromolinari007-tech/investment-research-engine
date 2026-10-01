@@ -1,0 +1,12 @@
+pandas>=2.2,<4
+numpy>=1.26
+requests>=2.31
+yfinance>=0.2.54
+streamlit>=1.50
+plotly>=5.20
+scipy>=1.11
+lxml>=5.0
+html5lib>=1.1
+beautifulsoup4>=4.12
+tomli>=2.0; python_version < "3.11"
+pytest>=8.0
