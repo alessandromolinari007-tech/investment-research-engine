@@ -117,11 +117,14 @@ ITEMS: dict[str, dict] = {
     },
     "capex": {  # reported as positive outflow
         "type": DURATION,
-        "us-gaap": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
-                     "PaymentsForCapitalImprovements", "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+        # IRE_CapexComponentsSum is built by the normalizer (sec_facts._add_capex_sum): E&P companies tag drilling
+        # capex and "other PP&E" separately, so the first concept alone can miss most of the capex.
+        # PaymentsToAcquireRealEstate (buying properties) is an acquisition, not maintenance/growth capex.
+        "us-gaap": ["IRE_CapexComponentsSum", "PaymentsToAcquirePropertyPlantAndEquipment",
+                     "PaymentsToAcquireProductiveAssets", "PaymentsForCapitalImprovements",
+                     "PaymentsToAcquireOtherPropertyPlantAndEquipment",
                      "PaymentsToAcquireOilAndGasPropertyAndEquipment", "PaymentsToAcquireOilAndGasProperty",
-                     "PaymentsToAcquireRealEstate", "PaymentsToDevelopRealEstateAssets",
-                     "PaymentsToAcquireMachineryAndEquipment"],
+                     "PaymentsToDevelopRealEstateAssets", "PaymentsToAcquireMachineryAndEquipment"],
         "ifrs-full": ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
                        "PurchaseOfPropertyPlantAndEquipment"],
         "yahoo": ["Capital Expenditure"],  # negative in Yahoo → sign fixed in normalizer
@@ -220,6 +223,21 @@ ITEMS: dict[str, dict] = {
         "ifrs-full": ["CurrentLiabilities"],
         "yahoo": ["Current Liabilities"],
     },
+    "liabilities_and_equity": {   # used only to derive total liabilities when "Liabilities" is not tagged
+        "type": INSTANT,
+        "us-gaap": ["LiabilitiesAndStockholdersEquity"],
+        "ifrs-full": ["EquityAndLiabilities"],
+    },
+    "equity_incl_nci": {
+        "type": INSTANT,
+        "us-gaap": ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+        "ifrs-full": ["Equity"],
+    },
+    "temporary_equity": {
+        "type": INSTANT,
+        "us-gaap": ["TemporaryEquityCarryingAmountAttributableToParent", "TemporaryEquityCarryingAmountIncludingPortionAttributableToNoncontrollingInterests"],
+        "ifrs-full": [],
+    },
     "total_liabilities": {
         "type": INSTANT,
         "us-gaap": ["Liabilities"],
@@ -267,42 +285,42 @@ ITEMS: dict[str, dict] = {
                        "NoncurrentPortionOfLongtermBorrowings"],
         "yahoo": ["Long Term Debt"],
     },
-    "debt_current": {  # all short-term debt incl. current maturities
+    "debt_current": {  # ALL short-term debt incl. current maturities (only "total" concepts here)
         "type": INSTANT,
-        "us-gaap": ["DebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"],
-        "ifrs-full": ["CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings", "ShorttermBorrowings"],
+        "us-gaap": ["DebtCurrent"],
+        "ifrs-full": ["CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"],
         "yahoo": ["Current Debt"],
     },
-    "debt_lt_current": {
+    "debt_lt_current": {  # current maturities of long-term debt only
         "type": INSTANT,
-        "us-gaap": ["LongTermDebtCurrent"],
+        "us-gaap": ["LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"],
         "ifrs-full": ["CurrentPortionOfLongtermBorrowings"],
     },
-    "st_borrowings": {
+    "st_borrowings": {  # short-term borrowings other than current maturities of long-term debt
         "type": INSTANT,
         "us-gaap": ["ShortTermBorrowings", "CommercialPaper", "LinesOfCreditCurrent", "NotesPayableCurrent",
                      "ConvertibleNotesPayableCurrent"],
-        "ifrs-full": [],
+        "ifrs-full": ["ShorttermBorrowings"],
     },
     # ---- leases (IFRS 16: lease liabilities are financial debt; EBITDA excludes lease costs) ----
-    "lease_liab_total": {
+    "lease_liab_total": {   # US GAAP: FINANCE leases only (like IFRS 16 leases, their cost is below EBITDA)
         "type": INSTANT,
-        "us-gaap": [],
+        "us-gaap": ["FinanceLeaseLiability"],
         "ifrs-full": ["LeaseLiabilities"],
     },
     "lease_liab_noncurrent": {
         "type": INSTANT,
-        "us-gaap": [],
+        "us-gaap": ["FinanceLeaseLiabilityNoncurrent"],
         "ifrs-full": ["NoncurrentLeaseLiabilities"],
     },
     "lease_liab_current": {
         "type": INSTANT,
-        "us-gaap": [],
+        "us-gaap": ["FinanceLeaseLiabilityCurrent"],
         "ifrs-full": ["CurrentLeaseLiabilities"],
     },
-    "lease_payments": {  # principal repayments of lease liabilities (financing cash flow under IFRS 16)
+    "lease_payments": {  # principal repayments of lease liabilities (financing cash flow; US GAAP: finance leases)
         "type": DURATION,
-        "us-gaap": [],
+        "us-gaap": ["FinanceLeasePrincipalPayments"],
         "ifrs-full": ["PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities", "PaymentsOfLeaseLiabilities"],
     },
     "preferred_equity": {

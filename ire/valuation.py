@@ -133,8 +133,9 @@ def historical_multiples(annual: pd.DataFrame, mcap_at: dict[pd.Timestamp, float
         debt, cash = r.get("total_debt"), r.get("cash")
         sti = r.get("short_term_investments") if pd.notna(r.get("short_term_investments")) else 0.0
         mi = r.get("minority_interest") if pd.notna(r.get("minority_interest")) else 0.0
-        # same EV definition as the current EV (metrics.py): + minorities − short-term investments
-        ev = mc + debt + mi - cash - sti if pd.notna(debt) and pd.notna(cash) else np.nan
+        pref = r.get("preferred_equity") if pd.notna(r.get("preferred_equity")) else 0.0
+        # same EV definition as the current EV (metrics.py): + minorities + preferred − short-term investments
+        ev = mc + debt + mi + pref - cash - sti if pd.notna(debt) and pd.notna(cash) else np.nan
         rows.append({
             "date": dt, "market_cap": mc,
             "pe": mc / ni if pd.notna(ni) and ni > 0 else np.nan,

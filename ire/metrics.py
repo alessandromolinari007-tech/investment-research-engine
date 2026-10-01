@@ -124,8 +124,9 @@ def compute_fundamental_metrics(
     def latest(item):
         if item in fin.latest:
             return float(fin.latest[item][0])
-        v = s(item)
-        return float(v.iloc[-1]) if len(v) else None
+        # last fiscal year only: a value from an older year is not "the latest balance sheet"
+        v = a[item].iloc[-1] if item in a.columns else None
+        return float(v) if v is not None and pd.notna(v) else None
 
     def kind_of(*items, base="calculated"):
         """Metrics built on an item that was ASSUMED (never reported → 0) are tagged 'assumption'."""
@@ -137,13 +138,15 @@ def compute_fundamental_metrics(
     cash = latest("cash")
     sti = latest("short_term_investments") or 0.0
     mi = latest("minority_interest") or 0.0
+    pref_ev = latest("preferred_equity") or 0.0       # a claim ahead of common shareholders, like debt
     m.add("market_cap", market_cap, "calculated", "ultimo prezzo", "prezzo × azioni (valuta di bilancio)")
     ev = None
     if market_cap is not None and debt is not None and cash is not None and not banklike:
-        ev = market_cap + debt + mi - cash - sti
+        ev = market_cap + debt + mi + pref_ev - cash - sti
     m.add("enterprise_value", ev, kind_of("total_debt"), "ultimo bilancio",
-          "capitalizzazione + debito finanziario + minoranze − cassa − investimenti a breve" if not banklike else na_fin,
-          market_cap=market_cap, debt=debt, cash=cash, short_term_investments=sti, minority_interest=mi)
+          "capitalizzazione + debito finanziario + minoranze + azioni privilegiate − cassa − investimenti a breve"
+          if not banklike else na_fin,
+          market_cap=market_cap, debt=debt, cash=cash, short_term_investments=sti, minority_interest=mi, preferred=pref_ev)
     m.add("net_debt", (debt - cash - sti) if (debt is not None and cash is not None and not banklike) else None,
           kind_of("total_debt"), "ultimo bilancio", "debito finanziario − cassa − investimenti a breve" if not banklike else na_fin,
           debt=debt, cash=cash)
@@ -193,7 +196,10 @@ def compute_fundamental_metrics(
     m.add("dividend_yield", _div(div, market_cap), "calculated", ttm_label, "dividendi pagati (cassa) / capitalizzazione",
           dividends_paid=div, market_cap=market_cap)
     sh_yield = None
-    if div is not None and bb is not None and market_cap:
+    # issuance unknown for the period (reported in annual data but not rolled to TTM) → not assumed 0,
+    # otherwise a diluting company would look like it returns cash
+    iss_known = iss is not None or "share_issuance" in fin.assumed_zero or "share_issuance" not in a.columns
+    if div is not None and bb is not None and market_cap and iss_known:
         sh_yield = (div + bb - (iss or 0.0)) / market_cap
     m.add("shareholder_yield", sh_yield, "calculated", ttm_label,
           "(dividendi + riacquisti − emissioni di azioni) / capitalizzazione", dividends=div, buybacks=bb, issuance=iss)
@@ -219,7 +225,7 @@ def compute_fundamental_metrics(
 
     # ------------------------------------------------------------ profitability (TTM)
     gp = t("gross_profit")
-    oi = t("operating_income")
+    oi = t("operating_income") if t("operating_income") is not None else t("ebit")   # no subtotal → EBIT
     if not banklike:
         m.add("gross_margin", _div(gp, rev), "calculated", ttm_label, "utile lordo / ricavi")
         m.add("operating_margin", _div(oi, rev), "calculated", ttm_label, "utile operativo / ricavi")
@@ -248,7 +254,11 @@ def compute_fundamental_metrics(
 
     # stability
     gm_s = _ratio_series(a, "gross_profit", "revenue")
-    om_s = _ratio_series(a, "operating_income", "revenue")
+    a_om = a.copy()
+    if "ebit" in a_om.columns:          # filers without an operating-income subtotal: EBIT (pretax + interest)
+        a_om["operating_income"] = (a_om["operating_income"] if "operating_income" in a_om.columns
+                                    else pd.Series(np.nan, index=a_om.index)).fillna(a_om["ebit"])
+    om_s = _ratio_series(a_om, "operating_income", "revenue")
     nm_s = _ratio_series(a, "net_income", "revenue")
     if not banklike:
         m.add("gross_margin_5y_median", _median(window(gm_s, 5)), "calculated", "ultimi 5 anni", "mediana margine lordo")

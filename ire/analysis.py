@@ -73,6 +73,15 @@ def market_cap_fin_ccy(company: dict[str, Any], fin: Financials, info: dict[str,
                 nearest = min(COMMON_ADR_RATIOS, key=lambda r: abs(math.log(ratio / r)))
                 det["adr_ratio_inferred"] = ratio
                 det["adr_ratio"] = nearest if abs(math.log(ratio / nearest)) < 0.06 else ratio
+                ymc = info.get("marketCap")
+                if ymc and mcap_p and ymc > 0 and abs(math.log(mcap_p / ymc)) > math.log(1.5):
+                    flags.append(_flag("ADR_MCAP_MISMATCH", "data",
+                                       "Capitalizzazione calcolata (prezzo × azioni Yahoo) diversa di oltre il 50% da quella "
+                                       "indicata da Yahoo: possibile conteggio di azioni ordinarie invece di ADR; da verificare"))
+                    conflicts.append({"item": "market_cap", "period_end": None, "value_a": mcap_p,
+                                      "source_a": "prezzo ADR × azioni Yahoo", "value_b": ymc, "source_b": "Yahoo marketCap",
+                                      "pct_diff": mcap_p / ymc - 1,
+                                      "likely_reason": "rapporto ADR/azioni ordinarie non applicato o conteggio azioni errato"})
                 if abs(math.log(ratio / nearest)) >= 0.06:
                     flags.append(_flag("ADR_RATIO_UNCERTAIN", "data",
                                        f"Rapporto tra azioni ordinarie (filing) e azioni Yahoo = {ratio:.3f}: non corrisponde a un "
@@ -177,9 +186,15 @@ def _div(a, b):
 
 def _historical_mcaps(fin: Financials, close_local: pd.Series, company: dict[str, Any], mdet: dict[str, Any],
                       fx: FxTable) -> dict[pd.Timestamp, float]:
-    """Market cap at each fiscal-year end in financial currency, using split-adjusted close
-    and split-adjusted weighted diluted shares. Validated against the current market cap."""
+    """Market cap at each fiscal-year end in financial currency, using split-adjusted close and the SAME
+    share basis as today's market cap where possible (period-end shares outstanding; weighted diluted shares
+    only as a fallback, which inflate past multiples by a few % and bias "cheap vs history").
+    Validated against the current market cap."""
     sh = fin.series("shares_diluted")
+    if fin.tier == "A" and company.get("filer_type") == "domestic":
+        so = fin.series("shares_outstanding")
+        if len(so):
+            sh = so.combine_first(sh) if len(sh) else so
     if sh.empty or any(f["code"] == "POSSIBLE_UNADJUSTED_SPLIT" for f in fin.flags):
         return {}
     ratio = float(mdet.get("adr_ratio") or 1.0)

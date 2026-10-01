@@ -112,7 +112,7 @@ def normalize_yahoo(company_id: str, ticker: str, st: dict[str, Any], fin_curren
             ttm = {}
             for c in ("revenue", "cost_of_revenue", "gross_profit", "operating_income", "net_income", "ocf",
                       "capex", "da", "sbc", "dividends_paid", "buybacks", "interest_expense", "pretax_income",
-                      "income_tax"):
+                      "income_tax", "share_issuance", "acquisitions"):
                 if c in last4.columns and last4[c].notna().all():
                     ttm[c] = float(last4[c].sum())
             if all(k in ttm for k in ("revenue", "net_income")) and "ocf" in ttm:

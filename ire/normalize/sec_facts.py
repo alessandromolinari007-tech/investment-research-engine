@@ -38,7 +38,14 @@ ASSUME_ZERO_IF_NEVER_REPORTED = {
 # never reported ≠ zero for these: leaving them missing is safer than inventing a favourable 0
 NEVER_ASSUME_ZERO = {"capex", "sbc", "total_debt"}
 DEBT_PARTS = ["debt_total_reported", "debt_lt_total", "debt_noncurrent", "debt_current", "debt_lt_current", "st_borrowings"]
-NICE_SPLIT_RATIOS = [2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 50]
+NICE_SPLIT_RATIOS = [1.25, 4 / 3, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 15, 20, 25, 50]
+# US GAAP debt concepts that already include finance (capital) lease obligations
+DEBT_WITH_LEASES = {"DebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+                    "LongTermDebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsCurrent"}
+CAPEX_BASE = ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"]
+CAPEX_COMPONENTS = [["PaymentsToAcquireOilAndGasPropertyAndEquipment", "PaymentsToAcquireOilAndGasProperty"],
+                    ["PaymentsToAcquireOtherPropertyPlantAndEquipment"], ["PaymentsForCapitalImprovements"],
+                    ["PaymentsToDevelopRealEstateAssets"], ["PaymentsToAcquireMachineryAndEquipment"]]
 
 
 def _days(a: str, b: str) -> int:
@@ -51,7 +58,10 @@ def detect_gaap(cf: dict[str, Any]) -> str:
 
 
 def detect_currency(cf: dict[str, Any]) -> str | None:
+    """Currency of the MOST RECENT annual filing (a filer that switched from USD to EUR reporting must be
+    read in EUR, otherwise all recent years are lost); the most frequent unit only as a tie-breaker."""
     counts: dict[str, int] = defaultdict(int)
+    latest: dict[str, str] = {}
     facts = cf.get("facts", {})
     for tax in ("us-gaap", "ifrs-full"):
         for concept in ("Revenues", "Revenue", "NetIncomeLoss", "ProfitLoss", "Assets",
@@ -62,9 +72,55 @@ def detect_currency(cf: dict[str, Any]) -> str | None:
             for unit, arr in node.get("units", {}).items():
                 if len(unit) == 3 and unit.isalpha() and unit.isupper():
                     counts[unit] += len(arr)
+                    filed = [e.get("filed") or "" for e in arr if e.get("form") in ANNUAL_FORMS]
+                    if filed:
+                        latest[unit] = max(latest.get(unit, ""), max(filed))
     if not counts:
         return None
+    if latest:
+        return max(latest, key=lambda u: (latest[u], counts[u]))
     return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _add_capex_sum(cf: dict[str, Any]) -> dict[str, Any]:
+    """Adds the synthetic concept us-gaap:IRE_CapexComponentsSum: per filing and period, the capex reported in
+    separate lines (oil & gas properties, other PP&E, capital improvements, real-estate development,
+    machinery). If a PP&E total is reported and is at least the sum of the other lines it is taken as
+    inclusive; otherwise the lines are added to it."""
+    us = cf.get("facts", {}).get("us-gaap", {})
+    names = CAPEX_BASE + [c for grp in CAPEX_COMPONENTS for c in grp]
+    if sum(1 for c in names if c in us) < 2:
+        return cf
+    by_key: dict[tuple, dict[str, float]] = defaultdict(dict)
+    proto: dict[tuple, dict[str, Any]] = {}
+    units = set()
+    for c in names:
+        for unit, arr in us.get(c, {}).get("units", {}).items():
+            units.add(unit)
+            for e in arr:
+                k = (unit, e.get("filed"), e.get("start"), e.get("end"))     # same filing, same period
+                by_key[k][c] = float(e["val"])
+                proto.setdefault(k, e)
+    out_units: dict[str, list] = defaultdict(list)
+    for k, vals in by_key.items():
+        base = max([vals[c] for c in CAPEX_BASE if c in vals], default=None)
+        comps = sum(max(vals[c] for c in grp if c in vals) for grp in CAPEX_COMPONENTS if any(c in vals for c in grp))
+        has_comp = any(c in vals for grp in CAPEX_COMPONENTS for c in grp)
+        if base is None:
+            val = comps
+        elif not has_comp or base >= comps:
+            val = base
+        else:
+            val = base + comps
+        e = dict(proto[k])
+        e["val"] = val
+        out_units[k[0]].append(e)
+    cf = dict(cf)
+    cf["facts"] = dict(cf.get("facts", {}))
+    cf["facts"]["us-gaap"] = dict(us)
+    cf["facts"]["us-gaap"]["IRE_CapexComponentsSum"] = {"label": "Capex (somma delle voci, calcolata)",
+                                                        "units": dict(out_units)}
+    return cf
 
 
 def _entries(cf: dict[str, Any], tax: str, concept: str, unit: str) -> list[dict[str, Any]]:
@@ -134,9 +190,12 @@ def normalize_companyfacts(
     fetched_at: str | None = None,
 ) -> Financials:
     splits = sorted(splits or []) if apply_splits else []
+    cf = _add_capex_sum(cf)
     currency = detect_currency(cf)
     fin = Financials(company_id=company_id, currency=currency, source=SOURCE, tier="A", annual=pd.DataFrame())
     fin.gaap = detect_gaap(cf)
+    us_facts = cf.get("facts", {}).get("us-gaap", {})
+    fin.debt_has_leases = any(c in us_facts for c in DEBT_WITH_LEASES)
     if currency is None:
         fin.flags.append({"code": "NO_MONETARY_FACTS", "severity": "data",
                           "message": "Nessun dato contabile XBRL in valuta trovato"})
@@ -253,10 +312,19 @@ def normalize_companyfacts(
 
     # ---------------------------------------------------------------- TTM + latest
     _compute_ttm(cf, currency, fin, df, fy_ends[-1], splits)
+    # "latest" balance sheet = the most recent balance-sheet date (of total assets). An item whose last report
+    # is OLDER than that date is not current: minor items are then 0 (assumption), the others unknown —
+    # never a value from years ago (e.g. debt repaid and no longer shown).
+    anchor = max((e["end"] for _, _, e in instants_all.get("total_assets", [])), default=None)
     for item, d in ITEMS.items():
         if d["type"] != INSTANT or not instants_all.get(item):
             continue
         last_end = max(e["end"] for _, _, e in instants_all[item])
+        if anchor and item != "shares_outstanding" and _days(last_end, anchor) > 5:
+            if item in ASSUME_ZERO_IF_NEVER_REPORTED:
+                fin.latest[item] = (0.0, pd.Timestamp(anchor))
+                fin.notes.append(f"{item}: non più riportato dopo il {last_end} → 0 nell'ultimo bilancio (assunzione).")
+            continue
         rec = _shares_after(instants_all[item], last_end, 0) if item == "shares_outstanding" else instant_at(item, last_end, tol=0)
         if rec is None:
             continue
@@ -396,6 +464,21 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
         if c not in df.columns:
             df[c] = np.nan
     ifrs = getattr(fin, "gaap", "US GAAP") == "IFRS"
+    # leases added to debt: IFRS 16 leases; US GAAP finance leases unless the debt concept already includes them
+    add_leases = ifrs or not getattr(fin, "debt_has_leases", False)
+    fin.add_leases = add_leases
+    # total liabilities: many US filers do not tag "Liabilities" → liabilities and equity − equity (incl. NCI)
+    if "liabilities_and_equity" in df.columns:
+        eq_all = df["equity_incl_nci"] if "equity_incl_nci" in df.columns else pd.Series(np.nan, index=df.index)
+        if "equity" in df.columns:
+            eq_all = eq_all.fillna(df["equity"] + df.get("minority_interest", 0.0).fillna(0.0))
+        tmp = df["temporary_equity"].fillna(0.0) if "temporary_equity" in df.columns else 0.0
+        calc = df["liabilities_and_equity"] - eq_all - tmp
+        mask = df["total_liabilities"].isna() & calc.notna()
+        if mask.any():
+            df.loc[mask, "total_liabilities"] = calc[mask]
+            fin.notes.append("Passività totali calcolate come totale passivo e patrimonio − patrimonio netto "
+                             "(voce 'Liabilities' non riportata).")
     # debt
     df["total_debt"] = df.apply(_debt_row, axis=1)
     any_debt_concept = any(c in reported for c in DEBT_PARTS)
@@ -416,6 +499,21 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
                               "message": "Debito finanziario non identificabile nei dati XBRL (voce con nome non standard): "
                                          "EV, debito netto e multipli EV non calcolati."})
     else:
+        if pd.isna(df["total_debt"].iloc[-1]) and df["total_debt"].notna().any():
+            # debt shown in earlier years, no debt line in the latest balance sheet: probably repaid. Assumed 0
+            # only with the same evidence required above (no interest expense in the last year)
+            ie_last = df["interest_expense"].iloc[-1]
+            ta, tl, cl = last.get("total_assets"), last.get("total_liabilities"), last.get("current_liabilities")
+            small_noncur = all(pd.notna(x) for x in (ta, tl, cl)) and ta > 0 and (tl - cl) / ta < 0.15
+            if (pd.notna(ie_last) and ie_last <= 0) or (pd.isna(ie_last) and small_noncur):
+                df.loc[df.index[-1], "total_debt"] = 0.0
+                fin.flags.append({"code": "ASSUMED_DEBT_REPAID", "severity": "data",
+                                  "message": "Debito riportato negli anni precedenti ma non nell'ultimo bilancio, senza "
+                                             "interessi passivi nell'ultimo anno: assunto rimborsato (0) — ASSUNZIONE, da verificare."})
+            else:
+                fin.flags.append({"code": "DEBT_UNKNOWN", "severity": "data",
+                                  "message": "Nell'ultimo bilancio il debito non è identificabile ma ci sono interessi passivi: "
+                                             "EV, debito netto e multipli EV dell'ultimo anno non calcolati."})
         cols = [c for c in DEBT_PARTS if c in df.columns]
         only_current = (last[[c for c in cols if c in ("debt_current", "debt_lt_current", "st_borrowings")]].notna().any()
                         and not last[[c for c in cols if c in ("debt_total_reported", "debt_lt_total", "debt_noncurrent")]].notna().any())
@@ -424,12 +522,13 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
             fin.flags.append({"code": "DEBT_PARTIAL", "severity": "data",
                               "message": "Nell'ultimo bilancio è riportato solo il debito a breve, ma le passività non correnti "
                                          "sono rilevanti: il debito totale potrebbe essere sottostimato."})
-    if ifrs:
+    if add_leases:
         leases = df.apply(_lease_total, axis=1)
         if (leases > 0).any():
             df["lease_liabilities"] = leases
             df["total_debt"] = df["total_debt"] + leases
-            fin.notes.append("IFRS 16: passività per leasing aggiunte al debito finanziario.")
+            fin.notes.append("IFRS 16: passività per leasing aggiunte al debito finanziario." if ifrs else
+                             "US GAAP: passività per leasing FINANZIARI aggiunte al debito (come i leasing IFRS 16).")
     # capex
     if "capex" not in reported:
         ppe, ta = last.get("ppe_net"), last.get("total_assets")
@@ -446,15 +545,16 @@ def _derive(df: pd.DataFrame, fin: Financials, reported: set[str]) -> pd.DataFra
         fin.notes.append("Compensi in azioni (SBC) mai riportati: metriche che li usano non calcolate (non assunti zero).")
     # FCF, EBITDA
     df["fcf"] = df["ocf"] - df["capex"]
-    if ifrs and df["lease_payments"].notna().any():
+    if df["lease_payments"].notna().any():
         df["fcf"] = df["fcf"] - df["lease_payments"].fillna(0.0)
-        fin.notes.append("IFRS 16: FCF = flusso operativo − capex − rimborsi quota capitale dei leasing.")
-    df["ebitda"] = df["operating_income"] + df["da"]
+        fin.notes.append("FCF = flusso operativo − capex − rimborsi quota capitale dei leasing "
+                         + ("(IFRS 16)." if ifrs else "finanziari (US GAAP)."))
     df["ebit"] = df["operating_income"]
     mask = df["ebit"].isna() & df["pretax_income"].notna() & df["interest_expense"].notna()
     if mask.any():
         df.loc[mask, "ebit"] = df.loc[mask, "pretax_income"] + df.loc[mask, "interest_expense"]
         fin.notes.append("EBIT = utile ante imposte + interessi passivi dove l'utile operativo non è riportato.")
+    df["ebitda"] = df["ebit"] + df["da"]
     minor = sorted(fin.assumed_zero - {"total_debt", "capex"})
     if minor:
         fin.notes.append("Voci mai riportate nei filing, trattate come 0 (assunzione): " + ", ".join(minor) + ".")
@@ -472,6 +572,10 @@ def _debt_row(r: pd.Series) -> float:
     noncur = g("debt_noncurrent")
     if noncur is None and g("debt_lt_total") is not None:
         lt_total = g("debt_lt_total")
+        if g("debt_lt_current") is None and g("debt_current") is not None:
+            # long-term total ALREADY includes its current portion, which is also inside "debt current":
+            # add only the other short-term borrowings to avoid counting the current maturities twice
+            return float(lt_total + (g("st_borrowings") or 0.0))
         noncur = lt_total - (g("debt_lt_current") or 0.0)
     if noncur is None and cur is None:
         return np.nan
@@ -490,7 +594,7 @@ def _latest_debt(fin: Financials) -> None:
     same = {k: v for k, v in parts.items() if fin.latest[k][1] == latest_date}
     val = _debt_row(pd.Series(same))
     if pd.notna(val):
-        if getattr(fin, "gaap", "") == "IFRS":
+        if getattr(fin, "add_leases", getattr(fin, "gaap", "") == "IFRS"):
             lease = {k: fin.latest[k][0] for k in ("lease_liab_total", "lease_liab_noncurrent", "lease_liab_current")
                      if k in fin.latest and fin.latest[k][1] == latest_date}
             val += _lease_total(pd.Series(lease)) if lease else 0.0
@@ -575,18 +679,19 @@ def _compute_ttm(cf, currency, fin: Financials, df: pd.DataFrame, last_fy_end: s
     if g("ocf") is not None:
         cap = g("capex") if g("capex") is not None else (0.0 if "capex" in fin.assumed_zero else None)
         ttm["fcf"] = g("ocf") - cap if cap is not None else np.nan
-        if getattr(fin, "gaap", "") == "IFRS" and pd.notna(ttm["fcf"]):
+        if pd.notna(ttm["fcf"]):
             lp = g("lease_payments")
             if lp is None and "lease_payments" in df.columns and pd.notna(df["lease_payments"].get(last_fy)):
                 lp = float(df["lease_payments"].get(last_fy))
             if lp:
                 ttm["fcf"] -= lp
-    if g("operating_income") is not None and g("da") is not None:
-        ttm["ebitda"] = g("operating_income") + g("da")
     if g("operating_income") is not None:
         ttm["ebit"] = g("operating_income")
-    elif "ebit" in df.columns and pd.notna(df["ebit"].get(last_fy)):
-        ttm["ebit"] = float(df["ebit"].get(last_fy))
+    elif g("pretax_income") is not None and g("interest_expense") is not None:
+        # same period as the other TTM items (never an older fiscal-year EBIT mixed with rolled-forward items)
+        ttm["ebit"] = g("pretax_income") + g("interest_expense")
+    if ttm.get("ebit") is not None and g("da") is not None:
+        ttm["ebitda"] = ttm["ebit"] + g("da")
     if g("gross_profit") is None and g("revenue") is not None and g("cost_of_revenue") is not None:
         ttm["gross_profit"] = g("revenue") - g("cost_of_revenue")
     for z in fin.assumed_zero:

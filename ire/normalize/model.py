@@ -25,6 +25,8 @@ class Financials:
     fiscal_year_end: str | None = None       # 'MM-DD'
     assumed_zero: set[str] = field(default_factory=set)
     gaap: str = ""                           # 'US GAAP' | 'IFRS' | '' (unknown, e.g. Yahoo)
+    debt_has_leases: bool = False            # US GAAP debt concept already includes finance leases
+    add_leases: bool = False                 # lease liabilities added to financial debt
 
     @property
     def years(self) -> int:
@@ -48,7 +50,10 @@ class Financials:
     def latest_instant(self, item: str) -> float | None:
         if item in self.latest:
             return float(self.latest[item][0])
-        return self.last(item)
+        if item not in self.annual.columns or self.annual.empty:     # last fiscal year only, never an older one
+            return None
+        v = self.annual[item].iloc[-1]
+        return float(v) if pd.notna(v) else None
 
     @property
     def latest_period_end(self) -> pd.Timestamp | None:
