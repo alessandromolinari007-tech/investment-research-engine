@@ -62,6 +62,39 @@ def configure(check_only: bool = False) -> bool:
     return ok
 
 
+def _free_port(preferred: int) -> int:
+    """`preferred` if free, otherwise the next free port (e.g. another interface already open on 8501)."""
+    import socket
+
+    for port in range(preferred, preferred + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return preferred
+
+
+def _wait_http(url: str, proc, timeout: float = 120) -> bool:
+    """True when the Streamlit server answers; False if it exits or does not answer within `timeout`."""
+    import time
+    import urllib.request
+
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if proc.poll() is not None:
+            return False
+        try:
+            with urllib.request.urlopen(url + "/_stcore/health", timeout=2) as r:
+                if r.status == 200:
+                    return True
+        except Exception:  # noqa: BLE001  (not ready yet)
+            pass
+        time.sleep(1)
+    return False
+
+
 def main(argv=None):
     _utf8_console()
     p = argparse.ArgumentParser(prog="python -m ire", description="Investment Research Engine")
@@ -110,20 +143,34 @@ def _dispatch(a) -> None:
             if summ.get("error"):
                 print("    errore:", summ["error"])
     elif a.cmd == "app":
-        import threading
         import webbrowser
 
         from .config import load_config
 
         load_config()          # a broken config.toml is reported here, not as a traceback inside the app
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        port = "8501"
-        # headless: no first-run "Email:" prompt that would block the window; the browser is opened here
-        print(f"Interfaccia in avvio su http://localhost:{port}  (chiudi questa finestra per fermarla)")
-        threading.Timer(4.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-        rc = subprocess.run([sys.executable, "-m", "streamlit", "run", os.path.join(here, "app", "app.py"),
-                             "--server.headless", "true", "--server.port", port,
-                             "--browser.gatherUsageStats", "false"], check=False).returncode
+        port = _free_port(8501)
+        url = f"http://127.0.0.1:{port}"
+        # headless: no first-run "Email:" prompt that would block the window. The browser is opened only when
+        # the server really answers (first start on Windows can take 10-30 s), on 127.0.0.1 (not "localhost",
+        # which some PCs resolve to IPv6 first)
+        print(f"Interfaccia in avvio su {url} ... (la prima volta può richiedere fino a un minuto)")
+        print("Per fermarla chiudi questa finestra.")
+        proc = subprocess.Popen([sys.executable, "-m", "streamlit", "run", os.path.join(here, "app", "app.py"),
+                                 "--server.headless", "true", "--server.port", str(port),
+                                 "--server.address", "127.0.0.1", "--browser.gatherUsageStats", "false"])
+        if _wait_http(url, proc, timeout=120):
+            print(f"Pronta: {url}  (se il browser non si apre, copia questo indirizzo nel browser)")
+            webbrowser.open(url)
+        elif proc.poll() is None:
+            print(f"L'interfaccia non risponde ancora: prova ad aprire a mano {url} tra qualche secondo.")
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            rc = 0
+        if rc:
+            print("L'interfaccia si è chiusa con un errore: leggi i messaggi qui sopra.")
         sys.exit(rc)
     elif a.cmd == "watch":
         from .db import init_db, now_iso
