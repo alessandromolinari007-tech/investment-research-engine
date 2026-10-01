@@ -144,9 +144,13 @@ INFO_KEYS = [
 ]
 
 
+NEGATIVE_INFO_TTL_H = 3      # "unknown ticker" answers can also be swallowed errors: remembered only briefly
+
+
 def info(ticker: str, ttl_hours: float = 20) -> dict[str, Any] | None:
     cached = _read_cache("info", ticker, ttl_hours * 3600)
-    if cached is not None:
+    if cached is not None and (cached.get("info") is not None or
+                               time.time() - cached.get("_fetched_at", 0) < NEGATIVE_INFO_TTL_H * 3600):
         return cached.get("info")
 
     def _get():
@@ -292,7 +296,10 @@ def statements(ticker: str, ttl_days: float = 7) -> dict[str, Any] | None:
         return None
     if not any(st.values()):
         return None          # empty frames = no data OR silent rate limit (yfinance does not raise): never cached
-    _write_cache("statements", ticker, {"statements": st})
+    # yfinance swallows rate-limit errors per statement: a result with only some of the three annual statements
+    # is used for this run but NOT cached, so it is downloaded again next time
+    if all(st.get(k) for k in ("income_annual", "balance_annual", "cashflow_annual")):
+        _write_cache("statements", ticker, {"statements": st})
     return st
 
 

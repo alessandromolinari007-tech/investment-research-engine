@@ -124,7 +124,34 @@ def test_dividend_readjustment_detected_by_recent_refresh(store):
     m = _meta(con, "AAA")
     assert m["full_fetched_at"] is None            # next get_full will download the whole history again
     first = con.execute("SELECT MIN(date) FROM prices WHERE ticker='AAA'").fetchone()[0]
-    assert first >= "2025-01-01"                   # inconsistent old rows removed, never mixed with the new ones
+    assert first <= "2014-01-03"                   # history KEPT until the full download succeeds (red team 2)
+    s.get_full(["AAA"])
+    stored = s._read(["AAA"], "2014-01-01")["AAA"]["adj_close"]
+    assert stored.iloc[0] == pytest.approx(fake.frames["AAA"]["adj_close"].iloc[0])
+
+
+def test_failed_full_redownload_keeps_history(store, monkeypatch):
+    s, fake, con = store
+    s.get_full(["AAA"])
+    con.execute("UPDATE price_meta SET fetched_at=?", ((pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=2)).isoformat(),))
+    fake.frames["AAA"] = fake.frames["AAA"].assign(adj_close=lambda d: d["adj_close"] * 0.98)
+    real = fake.__call__
+
+    def flaky(tickers, start="2014-01-01", batch=50, actions=False):
+        return {} if start == P.FULL_START else real(tickers, start, batch, actions)
+
+    monkeypatch.setattr(P.yahoo, "download_prices", flaky)
+    out = s.get_full(["AAA"])
+    assert out["AAA"].index.min() <= pd.Timestamp("2014-01-03")      # nothing lost when Yahoo returns nothing
+
+
+def test_today_bar_is_not_stored(store):
+    s, fake, con = store
+    today = pd.Timestamp.today().normalize()
+    fake.frames["AAA"].loc[today] = [101.0, 90.9, 5e5]
+    s.get_full(["AAA"])
+    last = con.execute("SELECT MAX(date) FROM prices WHERE ticker='AAA'").fetchone()[0]
+    assert last < today.strftime("%Y-%m-%d")
 
 
 def test_empty_download_is_not_marked_fresh(store):
@@ -257,3 +284,13 @@ def test_nikkei_alphanumeric_codes_are_kept():
     assert _clean_symbol("7203", nk) == "7203.T"
     assert _clean_symbol("TYO: 285A", nk) == "285A.T"
     assert _clean_symbol("ABCD", nk) is None
+
+
+def test_yahoo_pair_does_not_make_ecb_currencies_stale():
+    rows = [{"date": d.strftime("%Y-%m-%d"), "currency": "USD", "per_eur": 1.1, "source": "ECB"}
+            for d in pd.bdate_range("2022-01-03", "2022-03-01")]
+    rows += [{"date": d.strftime("%Y-%m-%d"), "currency": "TWD", "per_eur": 33.0, "source": "Yahoo EURTWD=X"}
+             for d in pd.bdate_range("2022-01-03", "2022-04-29")]
+    fx = FxTable(pd.DataFrame(rows))
+    assert fx.has("USD") and fx.has("TWD")
+    assert fx.convert(110.0, "USD", "EUR") == pytest.approx(100.0)

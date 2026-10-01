@@ -22,8 +22,8 @@ import pandas as pd
 from . import classify, qualitative, scoring
 from .analysis import analyze_company
 from .config import load_config
-from .db import init_db, log, now_iso, upsert, upsert_merge
-from .http import SourceUnavailable
+from .db import RunLock, init_db, log, now_iso, upsert, upsert_merge
+from .http import SourceUnavailable, get_client
 from .normalize.model import Financials
 from .normalize.sec_facts import normalize_companyfacts
 from .normalize.yahoo_facts import normalize_yahoo
@@ -44,12 +44,17 @@ class Pipeline:
         self.skip_deep = skip_deep
         self.limit = limit
         self.verbose = verbose
+        self.lock = RunLock(self.cfg.data_dir / "run.lock")
+        if not self.lock.acquire():
+            raise RuntimeError("Un'altra analisi è già in corso (un'altra finestra aperta?). Attendi che finisca "
+                               "oppure chiudila, poi riprova.")
         self.con = init_db()
-        self._migrate()
+        self._migrate()          # only now: a 'running' run in the DB cannot belong to a live process
         self.extra = [t.strip().upper() for t in (extra_tickers or []) if t.strip()]
         self.extra += [r["ticker"] for r in self.con.execute("SELECT ticker FROM watchlist")]
         self.extra += [r["ticker"] for r in self.con.execute("SELECT ticker FROM user_portfolio")]
         self.run_id: int | None = None
+        self.status: str | None = None
         self.t0 = time.time()
         self.fins: dict[str, Financials] = {}
         self.infos: dict[str, dict[str, Any]] = {}
@@ -96,12 +101,21 @@ class Pipeline:
                 self.stage_deep()
             self.stage_portfolio()
             self.stage_diff()
-            self.con.execute("UPDATE runs SET status='completed', finished_at=?, summary=? WHERE run_id=?",
-                             (now_iso(), json.dumps(self.stats, default=str), self.run_id))
+            issues = self._health()
+            self.stats["health"] = issues
+            self.status = "degraded" if issues else "completed"
+            self.con.execute("UPDATE runs SET status=?, finished_at=?, summary=? WHERE run_id=?",
+                             (self.status, now_iso(), json.dumps(self.stats, default=str), self.run_id))
             self.con.commit()
             self._prune()
-            self.say(f"Analisi completata in {(time.time() - self.t0) / 60:.1f} minuti. "
-                     f"Avvia l'interfaccia con: run_app.bat (oppure: python -m ire app)")
+            if issues:
+                for line in issues:
+                    self.say("   PROBLEMA DI DATI: " + line, "warning")
+                self.say("Analisi INCOMPLETA: i risultati restano consultabili ma l'interfaccia, il portafoglio e i "
+                         "confronti continuano a usare l'ultima analisi completa. Riprova più tardi.", "warning")
+            else:
+                self.say(f"Analisi completata in {(time.time() - self.t0) / 60:.1f} minuti. "
+                         f"Avvia l'interfaccia con: run_app.bat (oppure: python -m ire app)")
         except BaseException as e:  # noqa: BLE001  (also Ctrl+C / closed window → 'interrupted')
             interrupted = isinstance(e, (KeyboardInterrupt, SystemExit))
             status = "interrupted" if interrupted else "failed"
@@ -115,6 +129,8 @@ class Pipeline:
             except Exception:  # noqa: BLE001
                 pass
             raise
+        finally:
+            self.lock.release()
         return self.run_id
 
     # ------------------------------------------------------------------ stages
@@ -127,6 +143,11 @@ class Pipeline:
                                  fx[["date", "currency", "per_eur", "source"]].itertuples(index=False, name=None))
             self.con.commit()
             self.say(f"   BCE: {fx['currency'].nunique()} valute, ultimo giorno {fx['date'].max()}")
+            age = (pd.Timestamp.today().normalize() - pd.Timestamp(fx["date"].max())).days
+            if age > 7:
+                self.stats["fx_stale"] = (f"cambi BCE fermi al {fx['date'].max()} ({age} giorni fa): BCE probabilmente "
+                                          "non raggiungibile, usati i dati in cache")
+                self.say("   ATTENZIONE: " + self.stats["fx_stale"], "warning")
         except Exception as e:  # noqa: BLE001
             self.say(f"   BCE non raggiungibile ({e}); uso i cambi già salvati", "warning")
         for cur, series in RATE_SERIES.items():
@@ -180,6 +201,7 @@ class Pipeline:
         self.say(f"3/9 Storico prezzi (10+ anni) per {len(self.universe)} titoli + benchmark…", stage="prices")
         tickers = [c.ticker for c in self.universe] + [b for b, _ in BENCHMARKS]
         self.prices.get_full(tickers, read=False)
+        self.stats["prices_empty"] = len(set(self.prices.last_empty))
         # benchmark in EUR
         self.bench_eur, self.bench_name = None, None
         for t, name in BENCHMARKS:
@@ -220,7 +242,7 @@ class Pipeline:
 
         consecutive = 0
         with ThreadPoolExecutor(max_workers=4) as ex:
-            for i, (c, sub, cf, fetched, err) in enumerate(ex.map(fetch, sec_c)):
+            for i, (c, sub, cf, fetched, err) in enumerate(_bounded_map(ex, fetch, sec_c, window=8)):
                 if i and i % 100 == 0:
                     self.say(f"   SEC {i}/{len(sec_c)}")
                 if err is not None and sub is None:
@@ -261,6 +283,36 @@ class Pipeline:
             self.con.commit()
         self.stats["fundamentals"] = {"tier_A_sec": ok_a, "tier_B_yahoo": ok_b, "failed_or_excluded": fail}
         self.say(f"   bilanci ok: {ok_a} da SEC, {ok_b} da Yahoo; esclusi/falliti: {fail}")
+
+    def _health(self) -> list[str]:
+        """Signs that this run is built on a large share of missing or stale data (silent rate limits,
+        source outages). Such a run is stored as 'degraded' and never used as the reference run."""
+        issues = []
+        n = max(len(self.universe), 1)
+        f = self.stats.get("fundamentals", {})
+        ok = int(f.get("tier_A_sec", 0)) + int(f.get("tier_B_yahoo", 0))
+        if ok < 0.5 * n:
+            issues.append(f"bilanci ottenuti solo per {ok} società su {n}")
+        pe = int(self.stats.get("prices_empty", 0))
+        if pe > 0.2 * n:
+            issues.append(f"nessun prezzo ricevuto da Yahoo per {pe} titoli su {n} (probabile limite di richieste)")
+        stale_sec = sum(v for h, v in get_client().stale_hosts.items() if h.endswith("sec.gov"))
+        n_sec = sum(1 for c in self.universe if c.cik)
+        if n_sec and stale_sec > 0.2 * n_sec:
+            issues.append(f"SEC non raggiungibile per {stale_sec} richieste: usati dati in cache non aggiornati")
+        if self.stats.get("fx_stale"):
+            issues.append(self.stats["fx_stale"])
+        prev = self.con.execute("SELECT summary FROM runs WHERE status='completed' AND mode=? AND run_id < ? "
+                                "ORDER BY run_id DESC LIMIT 1", (self.mode, self.run_id)).fetchone()
+        if prev and not self.limit:
+            try:
+                prev_scored = int(json.loads(prev["summary"] or "{}").get("scored") or 0)
+            except (ValueError, TypeError):
+                prev_scored = 0
+            if prev_scored and self.stats.get("scored", 0) < 0.7 * prev_scored:
+                issues.append(f"società con punteggio scese da {prev_scored} a {self.stats.get('scored', 0)} "
+                              "rispetto all'analisi precedente della stessa modalità")
+        return issues
 
     def _exclude(self, company_id: str, reason: str) -> None:
         self.con.execute("UPDATE companies SET in_universe=0, exclusion_reason=? WHERE company_id=?", (reason, company_id))
@@ -367,57 +419,58 @@ class Pipeline:
         self.analyses = {}
         self.weekly_eur: dict[str, pd.Series] = {}
         meta = {r["ticker"]: r for r in self.con.execute("SELECT * FROM price_meta")}
-        tickers = [comp[cid]["ticker"] for cid in self.fins if cid in comp]
-        px = self.prices._read(tickers, "2014-01-01")
+        items = [(cid, fin) for cid, fin in self.fins.items() if cid in comp]
         metric_rows, flag_rows, conflict_rows = [], [], []
-        for cid, fin in self.fins.items():
-            c = comp.get(cid)
-            if not c:
-                continue
-            t = c["ticker"]
-            df = px.get(t)
-            divisor = (meta.get(t)["divisor"] if meta.get(t) else None) or yahoo.normalize_currency(c.get("price_currency"))[1]
-            if df is not None:
-                df = main_unit(df, divisor)
-            info = self.infos.get(cid, {})
-            price = float(df["close"].dropna().iloc[-1]) if df is not None and df["close"].notna().any() else None
-            try:
-                a = analyze_company(c, fin, info, price, df["close"] if df is not None else None,
-                                    df["adj_close"] if df is not None else None, self.fx, self.bench_eur, rates, self.cfg)
-            except Exception as e:  # noqa: BLE001
-                self.say(f"   {t}: errore analisi: {e}", "warning")
-                continue
-            self.analyses[cid] = a
-            if df is not None:
-                eur = self.fx.series_to_eur(df["adj_close"], c.get("price_currency") or "USD")
-                if eur is not None:
-                    self.weekly_eur[cid] = weekly_returns(eur)
-            for k, mv in a.metrics.items():
-                metric_rows.append({"run_id": self.run_id, "company_id": cid, "metric": k, "value": mv.value, "kind": mv.kind,
-                                    "period": mv.period, "method": mv.method, "inputs": json.dumps(mv.inputs, default=str)})
-            for f in a.flags:
-                flag_rows.append({"run_id": self.run_id, "company_id": cid, "code": f["code"], "severity": f["severity"],
-                                  "message": f.get("message"), "evidence": json.dumps(f.get("evidence"), default=str),
-                                  "source": f.get("source")})
-            for cf in a.conflicts:
-                conflict_rows.append({"run_id": self.run_id, "company_id": cid, **cf})
-            # store market details & data notes
-            md = dict(a.market)
-            md["notes"] = fin.notes
-            md["ttm_derivation"] = fin.ttm_derivation
-            md["ttm_end"] = str(fin.ttm_end.date()) if fin.ttm_end is not None else None
-            md["rdcf"] = a.rdcf.as_dict() if a.rdcf else None
-            md["hist_multiples"] = (a.hist_multiples.reset_index().assign(date=lambda d: d["date"].astype(str))
-                                    .to_dict("records") if a.hist_multiples is not None and not a.hist_multiples.empty else [])
-            self.con.execute(
-                "INSERT OR REPLACE INTO market_data (company_id, ticker, as_of, price, price_currency, market_cap_yahoo, "
-                "shares_yahoo, forward_eps, trailing_eps_yahoo, dividend_rate, beta_yahoo, peg_yahoo, quote_type, raw_json, fetched_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (cid, t, str(df.index.max().date()) if df is not None else None, price, c.get("price_currency"),
-                 info.get("marketCap"), info.get("impliedSharesOutstanding") or info.get("sharesOutstanding"),
-                 info.get("forwardEps"), info.get("trailingEps"), info.get("dividendRate"), info.get("beta"),
-                 info.get("trailingPegRatio") or info.get("pegRatio"), info.get("quoteType"),
-                 json.dumps(md, default=str), now_iso()))
+        for k0 in range(0, len(items), 200):
+            chunk = items[k0:k0 + 200]
+            # prices read 200 companies at a time (all ~3000 histories at once would need >1 GB)
+            px = self.prices._read([comp[cid]["ticker"] for cid, _ in chunk], "2014-01-01")
+            for cid, fin in chunk:
+                c = comp[cid]
+                t = c["ticker"]
+                df = px.get(t)
+                divisor = (meta.get(t)["divisor"] if meta.get(t) else None) or yahoo.normalize_currency(c.get("price_currency"))[1]
+                if df is not None:
+                    df = main_unit(df, divisor)
+                info = self.infos.get(cid, {})
+                price = float(df["close"].dropna().iloc[-1]) if df is not None and df["close"].notna().any() else None
+                try:
+                    a = analyze_company(c, fin, info, price, df["close"] if df is not None else None,
+                                        df["adj_close"] if df is not None else None, self.fx, self.bench_eur, rates, self.cfg)
+                except Exception as e:  # noqa: BLE001
+                    self.say(f"   {t}: errore analisi: {e}", "warning")
+                    continue
+                self.analyses[cid] = a
+                if df is not None:
+                    eur = self.fx.series_to_eur(df["adj_close"], c.get("price_currency") or "USD")
+                    if eur is not None:
+                        self.weekly_eur[cid] = weekly_returns(eur)
+                for k, mv in a.metrics.items():
+                    metric_rows.append({"run_id": self.run_id, "company_id": cid, "metric": k, "value": mv.value, "kind": mv.kind,
+                                        "period": mv.period, "method": mv.method, "inputs": json.dumps(mv.inputs, default=str)})
+                for f in a.flags:
+                    flag_rows.append({"run_id": self.run_id, "company_id": cid, "code": f["code"], "severity": f["severity"],
+                                      "message": f.get("message"), "evidence": json.dumps(f.get("evidence"), default=str),
+                                      "source": f.get("source")})
+                for cf in a.conflicts:
+                    conflict_rows.append({"run_id": self.run_id, "company_id": cid, **cf})
+                # store market details & data notes
+                md = dict(a.market)
+                md["notes"] = fin.notes
+                md["ttm_derivation"] = fin.ttm_derivation
+                md["ttm_end"] = str(fin.ttm_end.date()) if fin.ttm_end is not None else None
+                md["rdcf"] = a.rdcf.as_dict() if a.rdcf else None
+                md["hist_multiples"] = (a.hist_multiples.reset_index().assign(date=lambda d: d["date"].astype(str))
+                                        .to_dict("records") if a.hist_multiples is not None and not a.hist_multiples.empty else [])
+                self.con.execute(
+                    "INSERT OR REPLACE INTO market_data (company_id, ticker, as_of, price, price_currency, market_cap_yahoo, "
+                    "shares_yahoo, forward_eps, trailing_eps_yahoo, dividend_rate, beta_yahoo, peg_yahoo, quote_type, raw_json, fetched_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (cid, t, str(df.index.max().date()) if df is not None else None, price, c.get("price_currency"),
+                     info.get("marketCap"), info.get("impliedSharesOutstanding") or info.get("sharesOutstanding"),
+                     info.get("forwardEps"), info.get("trailingEps"), info.get("dividendRate"), info.get("beta"),
+                     info.get("trailingPegRatio") or info.get("pegRatio"), info.get("quoteType"),
+                     json.dumps(md, default=str), now_iso()))
         upsert(self.con, "metrics", metric_rows)
         upsert(self.con, "flags", flag_rows)
         upsert(self.con, "conflicts", conflict_rows)
@@ -449,12 +502,24 @@ class Pipeline:
         stale = pd.to_numeric(age, errors="coerce") > 550
         nomc = df["market_cap"].isna() if "market_cap" in df.columns else pd.Series(True, index=df.index)
         weights = dict(self.cfg.get("scoring.weights", {}))
-        scored = scoring.score_universe(df, weights, int(self.cfg.get("scoring.min_peer_group", 8)))
+        # stale or capitalisation-less companies are left OUT of the peer populations (their valuation metrics
+        # mix old fundamentals with today's price) and receive no score
+        ok = ~(stale | nomc)
+        scored = (scoring.score_universe(df[ok], weights, int(self.cfg.get("scoring.min_peer_group", 8)))
+                  if ok.any() else df.iloc[0:0].copy())
+        if (~ok).any():
+            rest = df[~ok].copy()
+            rest["profile"] = rest.apply(scoring.profile_of, axis=1)
+            rest["peer_group"] = rest.apply(scoring.peer_group_of, axis=1)
+            rest["peer_used"] = rest["peer_group"]
+            rest["detail_obj"] = [{"metrics": {}, "fallbacks": []} for _ in range(len(rest))]
+            rest["coverage"] = 0.0
+            scored = pd.concat([scored, rest]).loc[df.index]
         for col in ("composite", "robust_score", "quality", "valuation", "growth", "financial_strength", "capital_allocation"):
             scored.loc[stale | nomc, col] = np.nan
         scored["robust_percentile"] = scored["robust_score"].rank(pct=True) * 100
         scored["robust_rank"] = scored["robust_score"].rank(ascending=False, method="min")
-        for col in ("classification", "classification_reason", "confidence"):
+        for col in ("classification", "classification_reason", "confidence", "valuation_verdict", "valuation_confidence"):
             scored[col] = pd.Series([None] * len(scored), index=scored.index, dtype=object)
         self.scored = scored
         self.deep_done: set[str] = set()
@@ -473,7 +538,15 @@ class Pipeline:
         peer_cols = ["pe", "pb", "ev_ebit", "fcf_sbc_yield", "ev_sales", "dividend_yield", "earnings_yield_equity",
                      "roic_5y_median", "gross_margin", "operating_margin", "net_debt_ebitda", "revenue_cagr_5y"]
         medians = {}
-        for g, sub in scored.groupby("peer_used"):
+        for g in scored["peer_used"].dropna().unique():
+            # the SAME population used for the percentiles: a pooled label means all financials or the whole
+            # non-financial universe, not just the left-over companies of small sectors
+            if g == scoring.FIN_POOL:
+                sub = scored[scored["profile"] == "bank"]
+            elif str(g).startswith(scoring.ALL_POOL.split("(")[0].strip()):
+                sub = scored[scored["profile"] != "bank"]
+            else:
+                sub = scored[scored["peer_group"] == g]
             medians[g] = {c: float(pd.to_numeric(sub[c], errors="coerce").median())
                           for c in peer_cols if c in sub.columns and pd.to_numeric(sub[c], errors="coerce").notna().sum() >= 3}
         rows = []
@@ -491,6 +564,8 @@ class Pipeline:
                 verdict, vconf, signals = "non determinabile", "nessuna", []
             conf = scoring.confidence_of(r, flags) if pd.notna(r.get("robust_score")) else "bassa"
             scored.at[idx, "confidence"] = conf
+            scored.at[idx, "valuation_verdict"] = verdict
+            scored.at[idx, "valuation_confidence"] = vconf
             a = self.analyses.get(cid)
             metrics = {k: mv.value for k, mv in a.metrics.items()} if a else {}
             r2 = scored.loc[idx]
@@ -620,7 +695,7 @@ class Pipeline:
         if prev:
             try:
                 pp = json.loads(prev["payload"])
-                if pp.get("status", "proposto") == "proposto":
+                if pp.get("status", "proposto") in ("proposto", "concentrato"):
                     previous = {p["company_id"]: float(p["weight"]) for p in pp.get("positions", [])}
             except (ValueError, KeyError, TypeError):
                 previous = {}
@@ -663,10 +738,35 @@ class Pipeline:
     def _prune(self, keep: int = 24) -> None:
         old = [r["run_id"] for r in self.con.execute(
             "SELECT run_id FROM runs WHERE status='completed' ORDER BY run_id DESC LIMIT -1 OFFSET ?", (keep,))]
+        # results of failed / interrupted / degraded runs older than the current one are never shown: drop them
+        old += [r["run_id"] for r in self.con.execute(
+            "SELECT run_id FROM runs WHERE status NOT IN ('completed', 'running') AND run_id < ?", (self.run_id,))]
         for rid in old:
             for t in ("metrics", "scores", "flags", "conflicts", "portfolios"):
                 self.con.execute(f"DELETE FROM {t} WHERE run_id=?", (rid,))
         self.con.commit()
+
+
+def _bounded_map(ex, fn, items, window: int = 8):
+    """Like ex.map (results in order) but with at most `window` tasks in flight: with a warm disk cache the
+    workers parse companyfacts much faster than the main thread consumes them, and ex.map would keep
+    every parsed document (several MB each) in memory at once."""
+    from collections import deque
+
+    it = iter(items)
+    pending: deque = deque()
+    for x in it:
+        pending.append(ex.submit(fn, x))
+        if len(pending) >= window:
+            break
+    while pending:
+        fut = pending.popleft()
+        try:
+            nxt = next(it)
+            pending.append(ex.submit(fn, nxt))
+        except StopIteration:
+            pass
+        yield fut.result()
 
 
 def _nz(v):

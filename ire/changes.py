@@ -22,7 +22,8 @@ METRIC_RULES = [
 ]
 
 # exclusion reasons that usually depend on a data download, not on the company leaving the investable universe
-TEMPORARY_EXCLUSION = ("non scaricabili", "errore", "non disponibil", "vuoti", "nessun prezzo")
+TEMPORARY_EXCLUSION = ("non scaricabili", "errore", "non disponibil", "vuoti", "nessun prezzo", "ultimo prezzo vecchio",
+                       "metadati Yahoo")
 
 
 def _load(con: sqlite3.Connection, run_id: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

@@ -114,7 +114,15 @@ class PriceStore:
             else:
                 s = start
             data = yahoo.download_prices(chunk, start=s, actions=actions)
-            got = {t: df for t, df in data.items() if df is not None and not df.empty}
+            # today's bar can be an intraday snapshot (US market open in the European evening): never stored,
+            # otherwise the next run sees a "different" close and believes the history was re-adjusted
+            today = pd.Timestamp.today().normalize()
+            got = {}
+            for t, df in data.items():
+                if df is not None and not df.empty:
+                    df = df[df.index < today]
+                    if not df.empty:
+                        got[t] = df
             self.last_empty += [t for t in chunk if t not in got]
             yield chunk, got
 
@@ -144,12 +152,19 @@ class PriceStore:
                     first = min(pd.Timestamp(m["first_date"]), df.index.min()) if m["first_date"] else df.index.min()
                     req = min(m["requested_start"] or starts[t], starts[t])
                     self._write_meta(t, first, max(pd.Timestamp(m["last_date"]), df.index.max()), req, full=None)
+                elif m is not None and m["last_date"]:
+                    # Yahoo re-adjusted the history (split/dividend) or there is a gap: the stored history is KEPT
+                    # (it is replaced only when the full re-download succeeds); only the new days are appended,
+                    # and the ticker is marked for a full download (full_fetched_at = NULL)
+                    readjusted.append(t)
+                    newer = df[df.index > pd.Timestamp(m["last_date"])]
+                    if not newer.empty:
+                        self._insert_rows(t, newer)
+                    self._write_meta(t, pd.Timestamp(m["first_date"] or df.index.min()),
+                                     max(pd.Timestamp(m["last_date"]), df.index.max()),
+                                     m["requested_start"] or starts[t], full=False)
                 else:
-                    # history no longer consistent (or nothing stored yet): keep only the window just downloaded
-                    if m is not None and m["last_date"]:
-                        readjusted.append(t)
-                    self.con.execute("DELETE FROM prices WHERE ticker=?", (t,))
-                    self._insert_rows(t, df)
+                    self._insert_rows(t, df)                       # first download of this ticker
                     self._write_meta(t, df.index.min(), df.index.max(), starts[t], full=False)
                 if actions:
                     upsert(self.con, "splits", _split_rows(t, df))

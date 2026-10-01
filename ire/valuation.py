@@ -145,7 +145,7 @@ def historical_multiples(annual: pd.DataFrame, mcap_at: dict[pd.Timestamp, float
     return pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
 
 
-def percentile_vs_history(current: float | None, hist: pd.Series, min_points: int = 5) -> float | None:
+def percentile_vs_history(current: float | None, hist: pd.Series, min_points: int = 4) -> float | None:
     h = hist.dropna()
     h = h[(h > 0) & (h < 1000)]
     if current is None or current <= 0 or len(h) < min_points:
@@ -159,6 +159,9 @@ class Signal:
     verdict: str          # 'economica' | 'ragionevole' | 'costosa'
     detail: str
     weight: float = 1.0
+    # signals of the same family rest on largely the same numbers (peer multiples and earnings yield vs bonds are
+    # both "price vs current earnings"): they count once when judging how much independent evidence agrees
+    family: str = ""
 
 
 def valuation_verdict(signals: list[Signal]) -> tuple[str, str, list[Signal]]:
@@ -182,7 +185,7 @@ def valuation_verdict(signals: list[Signal]) -> tuple[str, str, list[Signal]]:
     opposed = opp is not None and score[opp] > 0
     if verdict == "ragionevolmente valutata" and score["economica"] > 0 and score["costosa"] > 0:
         opposed = True       # "fair" only because cheap and expensive signals cancel out
-    n = len(counted)
+    n = len({s.family or s.name for s in counted})        # independent pieces of evidence
     if n >= 3 and support >= 0.75 and not opposed:
         conf = "alta"
     elif n >= 2 and support >= 0.5 and not opposed:

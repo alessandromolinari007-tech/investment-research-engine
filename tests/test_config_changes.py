@@ -129,3 +129,12 @@ def test_different_modes_do_not_report_universe_moves(con):
     _run(con, 2, "standard", [("A", C_AVG, True), ("N", C_AVG, True)])
     ch = compute_changes(con, 2, 1)
     assert ch.empty or "Universo" not in set(ch.tipo)
+
+
+def test_config_saved_by_notepad_is_read(tmp_path):
+    src = (ROOT / "config.toml").read_bytes()
+    p = tmp_path / "config.toml"
+    p.write_bytes(b"\xef\xbb\xbf" + src)                                   # UTF-8 with BOM
+    assert C.load_config(p).universe_mode == "standard"
+    p.write_bytes(src.decode("utf-8").encode("cp1252", errors="replace"))    # "ANSI"
+    assert C.load_config(p).universe_mode == "standard"

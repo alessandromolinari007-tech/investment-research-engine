@@ -46,6 +46,7 @@ class CachedResponse:
     fetched_at: float
     from_cache: bool
     url: str
+    stale: bool = False          # served from an EXPIRED cache because the source failed
 
     def json(self) -> Any:
         return json.loads(self.content.decode("utf-8"))
@@ -79,7 +80,9 @@ class HttpClient:
         self.rates["data.sec.gov"] = min(sec_rate, 9.0)
         self.rates["www.sec.gov"] = min(sec_rate, 9.0)
         self._limiters: dict[str, RateLimiter] = {}
-        self.stats = {"requests": 0, "cache_hits": 0, "not_modified": 0, "errors": 0}
+        self.stats = {"requests": 0, "cache_hits": 0, "not_modified": 0, "errors": 0, "stale_served": 0}
+        self.stale_hosts: dict[str, int] = {}
+        self._cooldown_until: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     _lock = threading.Lock()
@@ -181,6 +184,9 @@ class HttpClient:
 
         last_err: Exception | None = None
         for attempt in range(max_retries):
+            pause = self._cooldown_until.get(host, 0.0) - time.time()
+            if pause > 0:                       # another thread was throttled by this host: wait with it
+                time.sleep(pause)
             self._limiter(host).wait()
             try:
                 self._count("requests")
@@ -217,29 +223,37 @@ class HttpClient:
                 last_err = SourceUnavailable(f"404 Not Found: {url}")
                 break
             if r.status_code == 403 and "sec.gov" in host:
-                body = (r.text or "")[:2000].lower()
-                if "rate" in body or "threshold" in body or "undeclared" not in body and attempt < max_retries - 1:
-                    # SEC signals throttling with 403 "Request Rate Threshold Exceeded": back off and retry
-                    last_err = SourceUnavailable("SEC: limite di richieste superato (403), attesa e nuovo tentativo")
-                    time.sleep(60 * (attempt + 1))
+                body = (r.text or "")[:4000].lower()
+                if "undeclared" in body or "user-agent" in body or "user agent" in body:
+                    last_err = SourceUnavailable(
+                        "SEC ha risposto 403 (User-Agent non accettato): in config.local.toml [sec] user_agent deve "
+                        "contenere nome ed email reali.")
+                    break
+                if ("rate" in body or "threshold" in body) and attempt < max_retries - 1:
+                    # SEC throttling (403 "Request Rate Threshold Exceeded"): shared back-off for all threads
+                    last_err = SourceUnavailable("SEC: limite di richieste superato (403)")
+                    self._cooldown_until[host] = time.time() + 30 * (attempt + 1)
                     continue
                 last_err = SourceUnavailable(
-                    "SEC ha risposto 403: controlla che in config.toml [sec] user_agent contenga "
-                    "nome ed email reali, e di non superare 10 richieste/secondo.")
+                    "SEC ha risposto 403: controlla il contatto [sec] user_agent e di non superare 10 richieste/secondo.")
                 break
             if r.status_code in (429, 500, 502, 503, 504):
                 last_err = SourceUnavailable(f"HTTP {r.status_code} for {url}")
                 retry_after = r.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after and retry_after.isdigit() else min(2 ** (attempt + 1), 60)
-                time.sleep(wait)
+                wait = min(float(retry_after), 120.0) if retry_after and retry_after.isdigit() else min(2 ** (attempt + 1), 60)
+                if attempt < max_retries - 1:          # no pointless sleep after the last attempt
+                    time.sleep(wait)
                 continue
             last_err = SourceUnavailable(f"HTTP {r.status_code} for {url}")
             break
 
         self._count("errors")
-        if allow_stale_on_error and cached is not None:
-            # Serve stale cache; the caller can see it through from_cache + fetched_at
-            return CachedResponse(cached, float(meta.get("fetched_at", 0)), True, url)
+        if allow_stale_on_error and cached is not None and "User-Agent" not in str(last_err):
+            # serve the expired cache, but make it visible: counted per host and flagged on the response
+            self._count("stale_served")
+            with self._lock:
+                self.stale_hosts[host] = self.stale_hosts.get(host, 0) + 1
+            return CachedResponse(cached, float(meta.get("fetched_at", 0)), True, url, stale=True)
         raise SourceUnavailable(str(last_err) if last_err else f"Failed: {url}")
 
 

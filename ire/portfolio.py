@@ -32,41 +32,67 @@ import pandas as pd
 from .classify import SECTOR_IT
 from .scoring import C_NODATA, C_QDET, C_REDFLAG, C_TRAP, QUALITY_DISCOUNT
 
+MIN_WEEKS_RISK = 52        # weekly returns needed (last 3 years) to estimate a holding's risk
 EXCLUDED_CLASSES = {C_REDFLAG, C_TRAP, C_NODATA, C_QDET}
 PILLAR_SHORT = {"quality": "qualità", "valuation": "valutazione", "growth": "crescita", "financial_strength": "solidità"}
 
 
 def ledoit_wolf(returns: pd.DataFrame) -> pd.DataFrame:
-    """Ledoit-Wolf (2004) shrinkage toward scaled identity. `returns` must have no NaN."""
-    X = returns.values
+    """Ledoit-Wolf (2003, "Honey, I shrunk the sample covariance matrix") shrinkage toward the
+    CONSTANT-CORRELATION target. For equities the identity target pulls every correlation toward 0 and
+    understates portfolio risk; the constant-correlation target keeps the average co-movement.
+    `returns` must have no NaN."""
+    X = returns.values.astype(float)
+    t, p = X.shape
     X = X - X.mean(axis=0)
-    n, p = X.shape
-    S = X.T @ X / n
-    mu = np.trace(S) / p
-    F = mu * np.eye(p)
-    d2 = np.linalg.norm(S - F, "fro") ** 2
-    b_bar = 0.0
-    for k in range(n):
-        xk = X[k][:, None]
-        b_bar += np.linalg.norm(xk @ xk.T - S, "fro") ** 2
-    b_bar /= n ** 2
-    b2 = min(b_bar, d2)
-    delta = b2 / d2 if d2 > 0 else 1.0
+    S = X.T @ X / t
+    var = np.diag(S).copy()
+    sd = np.sqrt(var)
+    if p < 2 or (sd <= 0).any():
+        return pd.DataFrame(S * t / max(t - 1, 1), index=returns.columns, columns=returns.columns)
+    corr = S / np.outer(sd, sd)
+    r_bar = (corr.sum() - p) / (p * (p - 1))
+    F = r_bar * np.outer(sd, sd)
+    np.fill_diagonal(F, var)
+    # pi: sum of asymptotic variances of the sample covariances
+    Y = X ** 2
+    pi_mat = (Y.T @ Y) / t - S ** 2
+    pi_hat = pi_mat.sum()
+    # rho: asymptotic covariances between target and sample entries
+    theta_ii_ij = ((X ** 3).T @ X) / t - var[:, None] * S          # θ_{ii,ij}
+    theta_jj_ij = theta_ii_ij.T
+    ratio = np.outer(1 / sd, sd)                                     # sqrt(s_jj / s_ii)
+    off = r_bar / 2 * (ratio * theta_ii_ij + ratio.T * theta_jj_ij)
+    np.fill_diagonal(off, 0.0)
+    rho_hat = np.trace(pi_mat) + off.sum()
+    gamma_hat = np.linalg.norm(F - S, "fro") ** 2
+    delta = 1.0 if gamma_hat <= 0 else max(0.0, min(1.0, (pi_hat - rho_hat) / gamma_hat / t))
     cov = delta * F + (1 - delta) * S
-    return pd.DataFrame(cov * n / max(n - 1, 1), index=returns.columns, columns=returns.columns)
+    return pd.DataFrame(cov * t / max(t - 1, 1), index=returns.columns, columns=returns.columns)
 
 
 def robust_cov(R: pd.DataFrame, min_rows: int = 52) -> tuple[pd.DataFrame, str]:
     """Annualized covariance without inventing zero returns: common window + Ledoit-Wolf, or (if the
-    common window is too short) pairwise covariance projected to the nearest PSD matrix."""
+    common window is too short) pairwise covariance; pairs that never overlap get the AVERAGE observed
+    correlation (never 0, which would make them look like perfect diversifiers); then the nearest PSD matrix.
+    Every column must have enough observations (see analyze_portfolio)."""
     common = R.dropna()
     if len(common) >= min_rows:
-        return ledoit_wolf(common) * 52, f"Ledoit-Wolf su {len(common)} settimane comuni"
-    C = R.cov(min_periods=26).values
-    C = np.nan_to_num(C, nan=0.0)
+        return ledoit_wolf(common) * 52, f"Ledoit-Wolf (correlazione costante) su {len(common)} settimane comuni"
+    C = R.cov(min_periods=26)
+    sd = np.sqrt(np.diag(C.values))
+    corr = C.values / np.outer(sd, sd)
+    known = corr[~np.eye(len(sd), dtype=bool)]
+    known = known[np.isfinite(known)]
+    fill = float(known.mean()) if known.size else 0.3
+    corr = np.where(np.isfinite(corr), corr, fill)
+    np.fill_diagonal(corr, 1.0)
+    C = corr * np.outer(sd, sd)
     vals, vecs = np.linalg.eigh((C + C.T) / 2)
     C = vecs @ np.diag(np.clip(vals, 1e-10, None)) @ vecs.T
-    return pd.DataFrame(C * 52, index=R.columns, columns=R.columns), "covarianza a coppie (storico comune breve)"
+    return (pd.DataFrame(C * 52, index=R.columns, columns=R.columns),
+            f"covarianza a coppie (solo {len(common)} settimane in comune; coppie senza storico comune: correlazione "
+            f"media {fill:.2f})")
 
 
 def _eligible(scores: pd.DataFrame, weekly: pd.DataFrame, min_pct: float, min_weeks: int, cfg,
@@ -74,6 +100,12 @@ def _eligible(scores: pd.DataFrame, weekly: pd.DataFrame, min_pct: float, min_we
     s = scores[scores["robust_score"].notna()]
     elig = s[(s["robust_percentile"] >= min_pct) & (~s["classification"].isin(EXCLUDED_CLASSES))
              & (s["confidence"] != "bassa")]
+    # the engine's own verdict: "costosa" with at least medium confidence is not proposed
+    if "valuation_verdict" in elig.columns and "valuation_confidence" in elig.columns:
+        dear = (elig["valuation_verdict"] == "costosa") & elig["valuation_confidence"].isin(["media", "alta"])
+        if dear.any():
+            log.append(f"Esclusi {int(dear.sum())} candidati con valutazione 'costosa' (confidenza media o alta)")
+        elig = elig[~dear]
     # user-added tickers must still meet the universe liquidity/size thresholds to enter the PROPOSAL
     if "forced" in elig.columns:
         min_dv = float(cfg.get("universe.min_median_dollar_volume_usd", 2e6))
@@ -182,8 +214,8 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
         if len(selected) >= min_pos:
             break
     if used_pct < min_pct0:
-        log.append(f"ATTENZIONE: soglia di qualità abbassata da {min_pct0:.0f} a {used_pct:.0f} per raggiungere un numero "
-                   "minimo di titoli diversificati")
+        log.append(f"ATTENZIONE: soglia di percentile del punteggio robusto abbassata da {min_pct0:.0f} a {used_pct:.0f} "
+                   "per raggiungere un numero minimo di titoli diversificati")
     if not selected:
         return {"positions": [], "status": "non proposto", "log": log + ["Nessun candidato idoneo."], "analytics": {}}
     status = "proposto"
@@ -204,14 +236,21 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
     sectors = info.loc[selected, "_sector"]
     regions = info.loc[selected, "_region"]
     w, report = enforce_caps(w, sectors, regions, min_w, max_w, max_sector, region_caps, log)
+    # caps broken by a wide margin: the result is a concentrated list, not a diversified proposal
+    far = [c for c in report if not c["rispettato"] and c["vincolo"] != "peso minimo per titolo"
+           and c["effettivo"] - c["configurato"] > (0.04 if c["vincolo"] == "peso massimo per titolo" else 0.10)]
+    if status == "proposto" and far:
+        status = "concentrato"
+        log.append("Portafoglio CONCENTRATO: " + "; ".join(f"{c['vincolo']} {c['effettivo']:.0%} (configurato "
+                                                          f"{c['configurato']:.0%})" for c in far)
+                   + ". Non è una proposta diversificata: allargare l'universo (modalità standard/full).")
     # no-trade band: small changes to existing holdings are not worth the costs → keep previous weight
     if previous:
-        tgt = w.copy()
-        for cid in tgt.index:
-            if cid in previous and abs(tgt[cid] - previous[cid]) < band:
-                tgt[cid] = previous[cid]
-        if not np.allclose(tgt.values, w.values):
-            w, report = enforce_caps(tgt / tgt.sum(), sectors, regions, min_w, max_w, max_sector, region_caps, [])
+        # names whose new weight is within the band KEEP their previous weight exactly (no tiny orders);
+        # only the other names absorb the difference
+        keep = {cid: float(previous[cid]) for cid in w.index if cid in previous and abs(w[cid] - previous[cid]) < band}
+        if keep:
+            w, report = enforce_caps(w, sectors, regions, min_w, max_w, max_sector, region_caps, [], fixed=keep)
     turnover = None
     if previous:
         allk = set(previous) | set(w.index)
@@ -235,6 +274,7 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
             "previous_weight": float(previous[cid]) if cid in previous else None,
             "sector": r.get("sector"), "region": r.get("region"), "role": role, "role_reason": why_role,
             "reason": reason, "robust_score": float(r["robust_score"]), "classification": r.get("classification"),
+            "valuation_verdict": r.get("valuation_verdict"), "valuation_confidence": r.get("valuation_confidence"),
             "vol": float(vol[cid]), "avg_corr": avg_corr[cid],
             "risk_note": _risk_note(r),
         })
@@ -245,55 +285,87 @@ def construct_portfolio(scores: pd.DataFrame, weekly: pd.DataFrame, cfg,
 
 
 def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: float, max_w: float, max_sector: float,
-                 region_caps: dict[str, float], log: list[str] | None = None) -> tuple[pd.Series, list[dict[str, Any]]]:
+                 region_caps: dict[str, float], log: list[str] | None = None,
+                 fixed: dict[str, float] | None = None) -> tuple[pd.Series, list[dict[str, Any]]]:
     """Weights closest (least squares) to the target `w` subject to: sum = 1, min/max per position,
-    max per sector, max per region. If infeasible, the per-position max is relaxed first (up to 12%),
-    then the group caps; every relaxation is reported against the configured value."""
-    from scipy.optimize import minimize
+    max per sector, max per region.
 
-    n = len(w)
+    If the caps cannot all hold, a linear program with one slack variable per cap finds the SMALLEST
+    relaxation (only the caps that are really binding are relaxed; raising one name's cap costs 3× a
+    group cap, because concentration in a single company is the worse risk). Every relaxation is reported
+    against the configured value. `fixed`: names whose weight must stay as given (no-trade band); ignored
+    if that makes the problem infeasible."""
+    from scipy.optimize import linprog, minimize
+
+    names = list(w.index)
+    n = len(names)
     lo = min(min_w, 1.0 / n)
-    hi = max_w
-    s_cap = max_sector
-    r_caps = {r: float(region_caps.get(r, 1.0)) for r in regions.unique()}
-    s_counts, r_counts = sectors.value_counts(), regions.value_counts()
+    secs, regs = list(sectors.unique()), list(regions.unique())
+    r_caps = {r: float(region_caps.get(r, 1.0)) for r in regs}
+    S_m = np.array([(sectors == s_).values for s_ in secs], dtype=float)
+    R_m = np.array([(regions == r_).values for r_ in regs], dtype=float)
 
-    def feasible():
-        if n * hi < 1 - 1e-9:
-            return False
-        if sum(min(s_cap, s_counts[s] * hi) for s in s_counts.index) < 1 - 1e-9:
-            return False
-        if sum(min(r_caps[r], r_counts[r] * hi) for r in r_counts.index) < 1 - 1e-9:
-            return False
-        return True
+    # ---- phase 1: minimal relaxation (variables: x[n], name slack[n], sector slack[k], region slack[m])
+    k, m = len(secs), len(regs)
+    nv = 2 * n + k + m
+    c = np.concatenate([np.zeros(n), np.full(n, 3.0), np.ones(k), np.ones(m)])
+    A, bnd = [], []
+    for i in range(n):                                  # x_i − s_i ≤ max_w
+        row = np.zeros(nv)
+        row[i], row[n + i] = 1, -1
+        A.append(row)
+        bnd.append(max_w)
+    for j in range(k):                                  # Σ_sector x − t_j ≤ max_sector
+        row = np.zeros(nv)
+        row[:n], row[2 * n + j] = S_m[j], -1
+        A.append(row)
+        bnd.append(max_sector)
+    for j, r_ in enumerate(regs):                       # Σ_region x − u_j ≤ cap
+        row = np.zeros(nv)
+        row[:n], row[2 * n + k + j] = R_m[j], -1
+        A.append(row)
+        bnd.append(r_caps[r_])
+    Aeq = np.zeros((1, nv))
+    Aeq[0, :n] = 1
+    bounds = [(lo, 1.0)] * n + [(0, 1.0)] * (n + k + m)
+    lp = linprog(c, A_ub=np.array(A), b_ub=np.array(bnd), A_eq=Aeq, b_eq=[1.0], bounds=bounds, method="highs")
+    slack = lp.x[n:] if lp.success else np.zeros(n + k + m)
+    tol = 1e-7
+    hi_i = max_w + np.where(slack[:n] > tol, slack[:n], 0.0)
+    s_caps = max_sector + np.where(slack[n:n + k] > tol, slack[n:n + k], 0.0)
+    rg_caps = np.array([r_caps[r_] for r_ in regs]) + np.where(slack[n + k:] > tol, slack[n + k:], 0.0)
 
-    steps = 0
-    while not feasible() and steps < 2000:
-        steps += 1
-        if hi < 0.12:
-            hi += 0.0025
-            continue
-        # relax the tightest group caps a little at a time
-        s_cap = min(1.0, s_cap + 0.01)
-        for r in r_caps:
-            r_caps[r] = min(1.0, r_caps[r] + 0.01)
-        if s_cap >= 1.0 and all(v >= 1.0 for v in r_caps.values()):
-            hi = min(1.0, hi + 0.01)
+    # ---- phase 2: weights closest to the target within the (minimally relaxed) caps
     w0 = w.values.astype(float)
-    cons = [{"type": "eq", "fun": lambda x: x.sum() - 1.0}]
-    for s_ in s_counts.index:
-        m = (sectors == s_).values.astype(float)
-        cons.append({"type": "ineq", "fun": lambda x, m=m: s_cap - (x * m).sum()})
-    for r_ in r_counts.index:
-        m = (regions == r_).values.astype(float)
-        cons.append({"type": "ineq", "fun": lambda x, m=m, c=r_caps[r_]: c - (x * m).sum()})
-    x0 = np.clip(w0, lo, hi)
-    x0 = x0 / x0.sum()
-    res = minimize(lambda x: ((x - w0) ** 2).sum(), x0, method="SLSQP", bounds=[(lo, hi)] * n, constraints=cons,
-                   options={"maxiter": 1000, "ftol": 1e-12})
-    x = np.clip(res.x, 0, None) if res.success else x0
-    if not res.success and log is not None:
-        log.append(f"Ottimizzatore dei pesi non convergente ({res.message}): uso pesi approssimati, vedi verifica vincoli")
+
+    def solve(bnds):
+        cons = [{"type": "eq", "fun": lambda x: x.sum() - 1.0}]
+        for j in range(k):
+            cons.append({"type": "ineq", "fun": lambda x, j=j: s_caps[j] + 1e-9 - S_m[j] @ x})
+        for j in range(m):
+            cons.append({"type": "ineq", "fun": lambda x, j=j: rg_caps[j] + 1e-9 - R_m[j] @ x})
+        x0 = np.clip(w0, [b[0] for b in bnds], [b[1] for b in bnds])
+        x0 = x0 / x0.sum()
+        return minimize(lambda x: ((x - w0) ** 2).sum(), x0, method="SLSQP", bounds=bnds, constraints=cons,
+                        options={"maxiter": 1000, "ftol": 1e-12})
+
+    base_bounds = [(lo, max(lo, float(h))) for h in hi_i]
+    res = None
+    if fixed:
+        fb = [((fixed[nm], fixed[nm]) if nm in fixed and b[0] <= fixed[nm] <= b[1] else b)
+              for nm, b in zip(names, base_bounds)]
+        res = solve(fb)
+        if not res.success:
+            res = None
+    if res is None:
+        res = solve(base_bounds)
+    if res.success:
+        x = np.clip(res.x, 0, None)
+    else:
+        x = lp.x[:n] if lp.success else np.full(n, 1.0 / n)      # LP solution satisfies the relaxed caps
+        if log is not None:
+            log.append(f"Ottimizzatore dei pesi non convergente ({res.message}): uso i pesi della fase di "
+                       "fattibilità, vedi verifica vincoli")
     x = x / x.sum()
     out = pd.Series(x, index=w.index)
     # ---- report every constraint against its CONFIGURED value
@@ -311,10 +383,10 @@ def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: fl
         report.append({"vincolo": f"peso massimo area {r_}", "configurato": cap, "effettivo": float(v),
                        "rispettato": bool(v <= cap + 1e-6)})
     if log is not None:
-        for c in report:
-            if not c["rispettato"]:
-                log.append(f"VINCOLO NON RISPETTATO: {c['vincolo']} = {c['effettivo']:.1%} (configurato {c['configurato']:.1%}) "
-                           "— troppi pochi candidati diversificati per rispettarlo")
+        for c_ in report:
+            if not c_["rispettato"]:
+                log.append(f"VINCOLO NON RISPETTATO: {c_['vincolo']} = {c_['effettivo']:.1%} (configurato "
+                           f"{c_['configurato']:.1%}) — troppo pochi candidati diversificati per rispettarlo")
     return out, report
 
 
@@ -366,9 +438,21 @@ def _risk_note(r: pd.Series) -> str:
 
 def analyze_portfolio(weights: dict[str, float], weekly: pd.DataFrame, meta: pd.DataFrame,
                       bench_weekly: pd.Series | None) -> dict[str, Any]:
-    ids = [c for c in weights if c in weekly.columns and weekly[c].notna().any()]
+    # a holding needs at least a year of weekly returns in the 3-year window, up to date: otherwise its
+    # risk cannot be estimated (with fewer points it used to look riskless)
+    win = weekly.iloc[-156:] if len(weekly) else weekly
+    last = win.index.max() if len(win) else None
+    ids, short = [], []
+    for c in weights:
+        if c not in win.columns or not win[c].notna().any():
+            continue
+        col = win[c].dropna()
+        if len(col) >= MIN_WEEKS_RISK and (last - col.index.max()).days <= 28:
+            ids.append(c)
+        else:
+            short.append(c)
     missing = [c for c in weights if c not in ids]
-    out: dict[str, Any] = {"missing_prices": missing}
+    out: dict[str, Any] = {"missing_prices": missing, "short_history": short}
     if not ids:
         return out
     w = pd.Series({c: weights[c] for c in ids}, dtype=float)
@@ -467,7 +551,8 @@ def analyze_portfolio(weights: dict[str, float], weekly: pd.DataFrame, meta: pd.
     if len(ids) < 12:
         warnings.append(f"Solo {len(ids)} titoli: il rischio specifico di ogni azienda pesa molto")
     if missing:
-        warnings.append(f"{len(missing)} titoli senza prezzi utilizzabili esclusi dall'analisi di rischio")
+        warnings.append(f"{len(missing)} titoli esclusi dall'analisi di rischio (prezzi assenti, meno di {MIN_WEEKS_RISK} "
+                        "settimane negli ultimi 3 anni o non aggiornati): i pesi degli altri sono stati riproporzionati")
     out["warnings"] = warnings
     return out
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -342,3 +343,48 @@ def latest_run_id(con: sqlite3.Connection, status: str | None = "completed") -> 
     else:
         r = con.execute("SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
     return int(r[0]) if r else None
+
+
+class RunLock:
+    """Exclusive OS-level lock on data/run.lock for the duration of an analysis. The operating system
+    releases it when the process ends (also after a crash or a closed window), so it is never stale."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.fh = None
+
+    def acquire(self) -> bool:
+        self.fh = open(self.path, "a+b")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            self.fh.close()
+            self.fh = None
+            return False
+
+    def release(self) -> None:
+        if self.fh is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self.fh.close()
+        self.fh = None

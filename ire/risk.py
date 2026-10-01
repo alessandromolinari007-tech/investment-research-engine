@@ -72,7 +72,9 @@ def price_risk_metrics(close_local: pd.Series, adj_local: pd.Series, adj_eur: pd
         out["drawdown_from_3y_high"] = float(c.iloc[-1] / hi3 - 1)
     a = adj_local.dropna()
     if len(a) >= TRADING_DAYS + 5:
-        out["momentum_12_1"] = float(a.iloc[-21] / a.iloc[-TRADING_DAYS] - 1)
+        se = series.dropna()      # in EUR like every other risk metric (ranked across currencies)
+        if len(se) >= TRADING_DAYS + 5:
+            out["momentum_12_1"] = float(se.iloc[-21] / se.iloc[-TRADING_DAYS] - 1)
         out["return_1y"] = float(series.dropna().iloc[-1] / series.dropna().iloc[-TRADING_DAYS] - 1) if len(series.dropna()) > TRADING_DAYS else None
     if len(a) >= TRADING_DAYS * 5:
         s5 = series.dropna()

@@ -11,7 +11,9 @@ from typing import Any
 import pandas as pd
 
 from .glossary import fmt, label
-from .scoring import PILLAR_IT
+from .scoring import PILLAR_IT, _is
+
+HIST_GROWTH_KEYS = ("fcf_cagr_5y", "revenue_cagr_5y", "revenue_cagr_3y")
 
 STRENGTH_TEMPLATES = {
     "roic_5y_median": "Rende molto sul capitale investito: ROIC mediano {v} negli ultimi 5 anni",
@@ -66,6 +68,41 @@ WEAKNESS_TEMPLATES = {
 }
 
 
+# A template states something about the company ITSELF: it is used only if the absolute value supports it.
+# Otherwise (e.g. "reduces its share count" while shares grow 1%/year but less than peers) the sentence is relative.
+STRENGTH_OK = {
+    "share_change_cagr_5y": lambda v: v < 0, "growth_gap": lambda v: v < 0, "pe_vs_history_pct": lambda v: v <= 0.3,
+    "revenue_cagr_5y": lambda v: v > 0, "revenue_cagr_3y": lambda v: v > 0, "eps_cagr_5y": lambda v: v > 0,
+    "fcf_ps_cagr_5y": lambda v: v > 0, "net_debt_ebitda": lambda v: v < 2, "interest_coverage": lambda v: v >= 8,
+    "shareholder_yield": lambda v: v >= 0.03, "fcf_conversion": lambda v: v >= 0.9, "roic_5y_median": lambda v: v >= 0.12,
+    "roic": lambda v: v >= 0.12, "pct_years_fcf_positive": lambda v: v >= 0.8, "pct_years_profitable": lambda v: v >= 0.8,
+    "piotroski_f": lambda v: v >= 6, "fcf_sbc_yield": lambda v: v > 0, "earnings_yield": lambda v: v > 0,
+}
+WEAKNESS_OK = {
+    "share_change_cagr_5y": lambda v: v > 0, "growth_gap": lambda v: v > 0, "pe_vs_history_pct": lambda v: v >= 0.7,
+    "interest_coverage": lambda v: v < 4, "current_ratio": lambda v: v < 1, "net_debt_ebitda": lambda v: v > 3,
+    "revenue_cagr_5y": lambda v: v < 0.03, "revenue_growth_last_fy": lambda v: v < 0.02, "roic_5y_median": lambda v: v < 0.08,
+    "roic": lambda v: v < 0.08, "fcf_conversion": lambda v: v < 0.7, "sbc_to_revenue": lambda v: v > 0.05,
+    "acquisitions_to_fcf_5y": lambda v: v > 0.5, "accruals_ratio": lambda v: v > 0.05,
+}
+
+
+def _sentence(templates: dict, ok: dict, key: str, v, p: float, better: bool) -> str:
+    rel = f" — percentile {p:.0f} tra i pari (50 = mediana)."
+    test = ok.get(key)
+    if v is not None and (test is None or _safe(test, v)):
+        return templates[key].format(v=fmt(key, v)) + rel
+    word = "Meglio" if better else "Peggio"
+    return f"{word} della maggior parte dei pari per {label(key).lower()} ({fmt(key, v)})" + rel
+
+
+def _safe(test, v) -> bool:
+    try:
+        return bool(test(float(v)))
+    except (TypeError, ValueError):
+        return False
+
+
 def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any], flags: list[dict],
                  peer_medians: dict[str, float], rdcf: dict[str, Any] | None, currency: str | None) -> dict[str, Any]:
     pcts = detail.get("metrics", {})
@@ -74,13 +111,13 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
         p = info["percentile"]
         v = metrics.get(key)
         if p >= 80 and key in STRENGTH_TEMPLATES and len(strengths) < 5:
-            strengths.append({"text": STRENGTH_TEMPLATES[key].format(v=fmt(key, v)) + f" — percentile {p:.0f} tra i pari (50 = mediana).",
+            strengths.append({"text": _sentence(STRENGTH_TEMPLATES, STRENGTH_OK, key, v, p, True),
                               "metric": key, "percentile": p})
     for key, info in sorted(pcts.items(), key=lambda kv: kv[1]["percentile"]):
         p = info["percentile"]
         v = metrics.get(key)
         if p <= 20 and key in WEAKNESS_TEMPLATES and len(weaknesses) < 5:
-            weaknesses.append({"text": WEAKNESS_TEMPLATES[key].format(v=fmt(key, v)) + f" — percentile {p:.0f} tra i pari (50 = mediana).",
+            weaknesses.append({"text": _sentence(WEAKNESS_TEMPLATES, WEAKNESS_OK, key, v, p, False),
                                "metric": key, "percentile": p})
     risk_flags = [f for f in flags if f.get("severity") in ("severe", "high", "medium")]
     for f in sorted(risk_flags, key=lambda f: {"severe": 0, "high": 1, "medium": 2}[f["severity"]])[:6]:
@@ -88,7 +125,7 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
 
     # what you are paying
     paying = []
-    for key in (["pe", "pb", "earnings_yield_equity", "dividend_yield"] if row.get("is_banklike") else
+    for key in (["pe", "pb", "earnings_yield_equity", "dividend_yield"] if _is(row, "is_banklike") else
                 ["pe", "ev_ebit", "fcf_sbc_yield", "ev_sales", "dividend_yield"]):
         v = metrics.get(key)
         pm = peer_medians.get(key)
@@ -102,7 +139,7 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
     must = []
     if rdcf and ig is not None:
         hist = None
-        for k in ("fcf_ps_cagr_5y", "revenue_cagr_5y", "revenue_cagr_3y"):
+        for k in HIST_GROWTH_KEYS:          # same order as growth_gap (analysis.py): like-for-like comparison
             if metrics.get(k) is not None:
                 hist = (k, metrics[k])
                 break
@@ -112,18 +149,23 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
         if hist:
             txt += f" Storicamente: {label(hist[0]).lower()} {fmt(hist[0], hist[1])}."
         paying.append(txt)
-        must.append(f"Con le ipotesi del modello, il prezzo attuale presuppone una crescita media del free cash flow di "
-                    f"circa il {max(ig, 0):.1%} l'anno: una crescita inferiore renderebbe il prezzo meno giustificato.")
+        if hist and hist[1] < ig - 0.01:
+            must.append(f"Già oggi la crescita storica ({label(hist[0]).lower()} {fmt(hist[0], hist[1])}) è inferiore a "
+                        f"quella coerente con il prezzo ({ig:.1%} l'anno): il prezzo presuppone un'accelerazione.")
+        else:
+            must.append(f"Con le ipotesi del modello, il prezzo attuale presuppone una crescita media del free cash flow di "
+                        f"circa il {ig:.1%} l'anno: una crescita inferiore renderebbe il prezzo meno giustificato.")
     om = metrics.get("op_margin_5y_median")
-    if om is not None and not row.get("is_banklike"):
+    if om is not None and not _is(row, "is_banklike"):
         must.append(f"La tesi presuppone margini vicini ai livelli storici (margine operativo mediano {om:.1%}).")
 
     monitor = []
-    if om is not None and not row.get("is_banklike"):
+    if om is not None and not _is(row, "is_banklike"):
         monitor.append(f"Margine operativo sotto {max(om - 0.05, 0):.1%} (5 punti sotto la mediana storica)")
     rg = metrics.get("revenue_cagr_5y") or metrics.get("revenue_cagr_3y")
     if ig is not None:
-        monitor.append(f"Crescita dei ricavi stabilmente sotto {max(ig - 0.03, 0):.1%} (sotto quanto implicito nel prezzo)")
+        monitor.append(f"Crescita del free cash flow stabilmente sotto il {ig - 0.03:.1%} l'anno "
+                       f"(3 punti sotto quanto coerente con il prezzo, {ig:.1%})")
     elif rg is not None:
         monitor.append(f"Crescita dei ricavi sotto {max(rg / 2, 0):.1%} (metà della media storica)")
     nde = metrics.get("net_debt_ebitda")

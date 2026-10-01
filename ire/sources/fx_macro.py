@@ -86,9 +86,18 @@ class FxTable:
             self.wide = w
             self.latest = w.index.max()
         self.sources = {}
+        self.source_latest: dict[str, pd.Timestamp] = {}
         if not df.empty and "source" in df.columns:
             self.sources = df.groupby("currency")["source"].last().to_dict()
+            # freshness is judged within each SOURCE: a Yahoo pair updated today must not make every ECB
+            # currency look stale, and vice versa
+            d = pd.to_datetime(df["date"])
+            self.source_latest = d.groupby(df["source"]).max().to_dict()
         self.sources["EUR"] = "identity"
+
+    def _reference(self, cur: str) -> pd.Timestamp | None:
+        src = self.sources.get(cur)
+        return self.source_latest.get(src, self.latest)
 
     def last_observation(self, cur: str) -> pd.Timestamp | None:
         if self.wide.empty or cur not in self.wide.columns:
@@ -101,7 +110,7 @@ class FxTable:
         if cur == "EUR":
             return True
         last = self.last_observation(cur)
-        return last is not None and (self.latest - last).days <= MAX_FX_GAP_DAYS
+        return last is not None and (self._reference(cur) - last).days <= MAX_FX_GAP_DAYS
 
     def rate(self, cur: str, on: date | str | pd.Timestamp | None = None) -> float | None:
         """Units of `cur` per 1 EUR on (or shortly before) the date; None if unknown or stale."""
@@ -112,7 +121,7 @@ class FxTable:
         s = self.wide[cur].dropna()
         if s.empty:
             return None
-        ts = self.latest if on is None else pd.Timestamp(on)
+        ts = self._reference(cur) if on is None else pd.Timestamp(on)
         s2 = s.loc[:ts]
         if s2.empty or (ts - s2.index[-1]).days > MAX_FX_GAP_DAYS:
             return None

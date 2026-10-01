@@ -81,9 +81,15 @@ def local_config_path(path: Path | None = None) -> Path:
 
 
 def _read_toml(p: Path) -> dict[str, Any]:
+    raw = p.read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):          # UTF-8 with BOM (Notepad "UTF-8 con BOM")
+        raw = raw[3:]
     try:
-        with open(p, "rb") as fh:
-            return tomllib.load(fh)
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1252", errors="replace")   # saved as "ANSI" by Notepad: Windows-1252 on Italian PCs
+    try:
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         hint = ""
         if "escape" in str(e).lower() or "\\" in p.read_text(encoding="utf-8", errors="replace"):

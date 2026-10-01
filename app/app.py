@@ -39,7 +39,8 @@ DIRECTION.update({"fcf_margin": 1, "operating_margin": 1, "net_margin": 1, "roe"
                   "beta_world": -1, "pb": -1})
 
 RUN = data.latest_run()
-STATUS_IT = {"completed": "completata", "failed": "fallita", "interrupted": "interrotta", "running": "in corso"}
+STATUS_IT = {"completed": "completata", "failed": "fallita", "interrupted": "interrotta", "running": "in corso",
+             "degraded": "incompleta (troppi dati mancanti o non aggiornati)"}
 
 
 def esc(text) -> str:
@@ -58,11 +59,13 @@ def run_banner():
     when = str(last["started_at"] or "")[:16].replace("T", " ")
     msg = f"L'ultima analisi (#{last['run_id']} del {when} UTC) risulta **{STATUS_IT.get(last['status'], last['status'])}**."
     try:
-        err = json.loads(last["summary"] or "{}").get("error")
+        summ = json.loads(last["summary"] or "{}")
     except ValueError:
-        err = None
-    if err:
-        msg += f" Motivo: {esc(str(err)[:300])}"
+        summ = {}
+    if summ.get("error"):
+        msg += f" Motivo: {esc(str(summ['error'])[:300])}"
+    if summ.get("health"):
+        msg += " Problemi: " + esc("; ".join(summ["health"])) + "."
     if RUN is not None:
         msg += f" Qui vedi l'ultima analisi completata (#{RUN})."
     msg += " Il log completo è nella pagina *Dati e metodologia*."
@@ -676,6 +679,9 @@ def page_portfolio():
             if p.get("status") == "non proposto":
                 st.error("**Portafoglio NON proposto**: troppo pochi titoli rispettano i criteri e i vincoli di "
                          "diversificazione. L'elenco sotto è solo una lista di candidati da studiare.")
+            elif p.get("status") == "concentrato":
+                st.error("**Portafoglio CONCENTRATO**: i limiti di diversificazione (per titolo, settore o area) sono "
+                         "superati di molto. Non è una proposta diversificata: è una lista di candidati da studiare.")
             m1, m2, m3 = st.columns(3)
             m1.metric("Posizioni", len(p["positions"]))
             m2.metric("Rotazione vs proposta precedente", f"{p['turnover']:.0%}" if p.get("turnover") is not None else "n/d",
@@ -700,13 +706,18 @@ def page_portfolio():
             st.caption("Proposta generata dalla metodologia: " + p.get("method", "") +
                        " È un punto di partenza per la tua ricerca, non una raccomandazione personalizzata.")
             pos = pd.DataFrame(p["positions"])
-            view = pos[["ticker", "name", "weight", "role", "sector", "region", "classification", "reason", "risk_note"]].copy()
+            for col in ("valuation_verdict", "valuation_confidence"):
+                if col not in pos.columns:
+                    pos[col] = None
+            view = pos[["ticker", "name", "weight", "role", "sector", "region", "classification", "valuation_verdict",
+                        "valuation_confidence", "reason", "risk_note"]].copy()
             view["sector"] = view["sector"].map(sector_it)
             ev = st.dataframe(view, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row",
                               key=tkey("portfolio"),
                               column_config={"ticker": "Ticker", "name": "Società",
                                              "weight": st.column_config.NumberColumn("Peso", format="percent"),
                                              "role": "Ruolo", "sector": "Settore", "region": "Area", "classification": "Classificazione",
+                                             "valuation_verdict": "Valutazione", "valuation_confidence": "Confidenza del verdetto",
                                              "reason": st.column_config.TextColumn("Perché è nel portafoglio", width="large"),
                                              "risk_note": "Rischio che porta"})
             if ev and ev.selection and ev.selection.rows:

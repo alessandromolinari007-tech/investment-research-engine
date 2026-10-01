@@ -36,7 +36,8 @@ def test_full_pipeline_offline(world):
     m = pd.read_sql_query("SELECT company_id, metric, value FROM metrics WHERE run_id=?", con, params=[rid])
     uk = comps.loc[comps.ticker == "UKX1.L", "company_id"].iloc[0]
     mc = m[(m.company_id == uk) & (m.metric == "market_cap")]["value"].iloc[0]
-    px = world.px["UKX1.L"]["close"].iloc[-1] / 100
+    ukpx = world.px["UKX1.L"]["close"]
+    px = ukpx[ukpx.index < pd.Timestamp.today().normalize()].iloc[-1] / 100     # today's bar is never stored
     assert mc == pytest.approx(px * 5e8, rel=1e-6)
     # ADR: market cap of FORX in EUR = price_usd * ADS shares / 1.1
     fx_cid = comps.loc[comps.ticker == "FORX", "company_id"].iloc[0]
@@ -67,7 +68,7 @@ def test_full_pipeline_offline(world):
     assert w.max() <= 0.12 + 1e-6
     secw = pd.Series({p["ticker"]: p["weight"] for p in pos}).groupby(pd.Series({p["ticker"]: p["sector"] for p in pos})).sum()
     assert secw.max() == pytest.approx(rep["peso massimo per settore"]["effettivo"], abs=1e-6)
-    assert port["status"] in ("proposto", "non proposto")
+    assert port["status"] in ("proposto", "non proposto", "concentrato")
     if len(pos) < 12:
         assert port["status"] == "non proposto"
     assert all(p["role"] and p["reason"] for p in pos)

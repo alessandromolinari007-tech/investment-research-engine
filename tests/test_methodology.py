@@ -94,11 +94,15 @@ def _row(**kw):
     ({"quality": 85, "valuation": 80}, [{"code": "GOING_CONCERN_TEXT", "severity": "high", "message": "gc"}], S.C_REDFLAG),
     ({"quality": 85, "valuation": 80}, [{"code": "X", "severity": "high", "message": "a"},
                                         {"code": "Y", "severity": "high", "message": "b"}], S.C_REDFLAG),
-    ({"quality": 85, "valuation": 70}, [], S.C_QDISC),
-    ({"quality": 85, "valuation": 70, "pe_vs_history_pct": 0.2}, [], S.C_TEMP),
-    ({"quality": 85, "valuation": 70, "drawdown_from_3y_high": -0.4}, [], S.C_TEMP),
+    ({"quality": 85, "valuation": 70, "valuation_peers": 70}, [], S.C_QDISC),
+    ({"quality": 85, "valuation": 70, "valuation_peers": 70, "pe_vs_history_pct": 0.2}, [], S.C_TEMP),
+    ({"quality": 85, "valuation": 70, "valuation_peers": 70, "drawdown_from_3y_high": -0.4}, [], S.C_TEMP),
+    # cheap overall but NOT on peer multiples: no "a sconto vs pari" label
+    ({"quality": 85, "valuation": 70, "valuation_peers": 50}, [], S.C_QFAIR),
     ({"quality": 85, "valuation": 50, "revenue_cagr_5y": -0.02}, [], S.C_QDET),
-    ({"quality": 85, "valuation": 50, "growth": 20}, [], S.C_QDET),
+    # weak growth RANK in the sector is a caution (blocks "a sconto"), not a deterioration over time
+    ({"quality": 85, "valuation": 70, "valuation_peers": 70, "growth": 20}, [], S.C_QFAIR),
+    ({"quality": 60, "valuation": 75}, [{"code": "CYCLICAL_PEAK", "severity": "medium", "message": "picco"}], S.C_TRAP),
     ({"quality": 30, "valuation": 75}, [], S.C_TRAP),
     ({"quality": 55, "valuation": 80, "revenue_cagr_3y": -0.05}, [], S.C_TRAP),
     ({"quality": 85, "valuation": 30}, [], S.C_QFULL),
@@ -114,7 +118,8 @@ def test_classify_row(kw, flags, expected):
 
 
 def test_single_high_flag_blocks_positive_labels():
-    cls, why = S.classify_row(_row(quality=85, valuation=70), [{"code": "X", "severity": "high", "message": "debito"}])
+    cls, why = S.classify_row(_row(quality=85, valuation=70, valuation_peers=70),
+                              [{"code": "X", "severity": "high", "message": "debito"}])
     assert cls not in S.QUALITY_DISCOUNT and "debito" in why
 
 
@@ -147,14 +152,32 @@ def test_opposite_signals_give_low_confidence():
     assert v == "non determinabile" and conf == "nessuna"
 
 
+def test_red_flag_reason_not_repeated():
+    f = {"code": "HIGH_LEVERAGE", "severity": "high", "message": "Debito netto 7x EBITDA"}
+    cls, why = S.classify_row(_row(), [f])
+    assert cls == S.C_REDFLAG and why.count("Debito netto") == 1
+
+
+def test_robust_score_survives_one_scheme_short_of_data():
+    r = pd.Series({"quality": 80.0, "valuation": 70.0, "capital_allocation": 60.0})
+    vals = [S._composite(r, w or {"quality": .3, "valuation": .25, "financial_strength": .2, "growth": .15,
+                                   "capital_allocation": .1}) for w in S.WEIGHT_SCHEMES.values()]
+    assert all(pd.notna(v) for v in vals)
+    assert pd.isna(S._composite(pd.Series({"quality": 80.0, "valuation": 70.0}), {"quality": 1, "valuation": 1}))
+
+
 def test_confidence_levels():
     good = pd.Series({"coverage": 0.9, "data_tier": "A", "years_of_data": 10, "rank_spread": 0.05})
     assert S.confidence_of(good, []) == "alta"
     assert S.confidence_of(good.copy().replace({"A": "B"}), []) == "media"
+    yahoo_short = pd.Series({"coverage": 0.9, "data_tier": "B", "years_of_data": 4, "rank_spread": 0.05})
+    assert S.confidence_of(yahoo_short, []) == "media"     # tier B and short history: ONE penalty
     unstable = good.copy()
     unstable["rank_spread"] = 0.4
     assert S.confidence_of(unstable, []) == "media"
     assert S.confidence_of(good, [{"severity": "data"}, {"severity": "data"}]) == "media"
+    yahoo_thin = pd.Series({"coverage": 0.7, "data_tier": "B", "years_of_data": 4, "rank_spread": 0.05})
+    assert S.confidence_of(yahoo_thin, []) == "media"       # thin data counted once
     poor = pd.Series({"coverage": 0.5, "data_tier": "B", "years_of_data": 3})
     assert S.confidence_of(poor, []) == "bassa"
 
@@ -298,3 +321,101 @@ def test_excluded_classes_never_enter_portfolio():
     sc.loc[sc.company_id == "C2", "confidence"] = "bassa"
     port = construct_portfolio(sc, _weekly(30), _cfg())
     assert not {"C0", "C1", "C2"} & {p["company_id"] for p in port["positions"]}
+
+
+def test_reit_valuation_ranked_among_reits():
+    rows = [{"company_id": f"N{i}", "sector": "Real Estate", "dividend_yield": 0.01 + 0.002 * i} for i in range(8)]
+    rows += [{"company_id": f"R{i}", "sector": "Real Estate", "is_reit": 1, "dividend_yield": 0.05 + 0.01 * i,
+              "p_ffo": 10.0 + i} for i in range(5)]
+    out = S.score_universe(pd.DataFrame(rows), {"quality": 1}, min_peer=8)
+    r = {x.company_id: x.detail_obj["metrics"] for x in out.itertuples()}
+    assert "p_ffo" in r["R0"]                                    # 5 REITs: enough for a REIT-only percentile
+    assert r["R0"]["dividend_yield"]["percentile"] < 50          # lowest yield AMONG REITs, not "cheap" vs non-REITs
+
+
+def test_peer_medians_use_pooled_population(world):
+    """Small sectors are ranked against the whole non-financial universe: the medians shown must be the same."""
+    import json
+    from ire.db import connect
+    from ire.pipeline import Pipeline
+
+    rid = Pipeline(mode="quick", verbose=False).run()
+    con = connect()
+    rows = con.execute("SELECT peer_group, detail FROM scores WHERE run_id=?", (rid,)).fetchall()
+    pooled = [json.loads(r["detail"])["peer_medians"] for r in rows if str(r["peer_group"]).startswith("Universo intero")]
+    full = [json.loads(r["detail"])["peer_medians"] for r in rows]
+    assert all(m == pooled[0] for m in pooled)
+    assert len(full) > 0
+
+
+def test_only_binding_caps_are_relaxed():
+    """Red team 2: relaxing every group cap together broke a sector cap that was achievable."""
+    idx = [f"C{i}" for i in range(12)]
+    w = pd.Series(1 / 12, index=idx)
+    sectors = pd.Series(["A", "B", "C", "D"] * 3, index=idx)
+    regions = pd.Series(["Nord America"] * 11 + ["Europa"], index=idx)
+    out, rep = enforce_caps(w, sectors, regions, 0.025, 0.08, 0.25, {"Nord America": 0.65, "Europa": 0.45})
+    by = {c["vincolo"]: c for c in rep}
+    assert by["peso massimo per settore"]["rispettato"]
+    assert not by["peso massimo area Nord America"]["rispettato"]
+    assert out.sum() == pytest.approx(1.0)
+
+
+def test_no_trade_band_keeps_previous_weights_exactly():
+    sc = _scores(30)
+    weekly = _weekly(30)
+    first = construct_portfolio(sc, weekly, _cfg())
+    prev = {p["company_id"]: p["weight"] for p in first["positions"]}
+    sc2 = sc.copy()
+    sc2["robust_score"] = sc2["robust_score"] + np.linspace(0, 0.5, len(sc2))     # tiny score changes
+    second = construct_portfolio(sc2, weekly, _cfg(no_trade_band=0.015), previous=prev)
+    new = {p["company_id"]: p["weight"] for p in second["positions"]}
+    small = [c for c in new if c in prev and 1e-9 < abs(new[c] - prev[c]) < 0.015 - 1e-9]
+    assert not small, small
+
+
+def test_concentrated_status_when_caps_far_off():
+    sc = _scores(12)
+    sc["region"] = "Nord America"
+    sc["sector"] = ["A", "B", "C"] * 4
+    port = construct_portfolio(sc, _weekly(12), _cfg(min_positions=12))
+    assert port["status"] == "concentrato"
+
+
+def test_expensive_verdict_not_proposed():
+    sc = _scores(30)
+    sc["valuation_verdict"] = "ragionevolmente valutata"
+    sc["valuation_confidence"] = "media"
+    sc.loc[sc.company_id == "C0", "valuation_verdict"] = "costosa"
+    port = construct_portfolio(sc, _weekly(30), _cfg())
+    assert "C0" not in {p["company_id"] for p in port["positions"]}
+
+
+def test_ledoit_wolf_constant_correlation_is_not_optimistic():
+    from ire.portfolio import ledoit_wolf
+
+    rng = np.random.default_rng(0)
+    n, rho = 20, 0.35
+    C = (np.full((n, n), rho) + np.eye(n) * (1 - rho)) * 0.04 ** 2
+    L = np.linalg.cholesky(C)
+    w = np.ones(n) / n
+    ratios = []
+    for _ in range(60):
+        X = rng.standard_normal((156, n)) @ L.T
+        S = ledoit_wolf(pd.DataFrame(X)).values
+        assert np.all(np.linalg.eigvalsh(S) > 0)
+        assert np.allclose(np.diag(S), X.var(axis=0, ddof=1))        # variances are never shrunk
+        ratios.append(np.sqrt(w @ S @ w / (w @ C @ w)))
+    assert 0.97 < np.mean(ratios) < 1.05
+
+
+def test_short_history_holding_is_excluded_not_riskless():
+    from ire.portfolio import analyze_portfolio
+
+    weekly = _weekly(3)
+    weekly.iloc[:-20, 2] = np.nan                       # an IPO with 20 weeks of data
+    meta = pd.DataFrame({"company_id": ["C0", "C1", "C2"], "sector": "A", "region": "Europa", "price_currency": "EUR"})
+    an = analyze_portfolio({"C0": 0.25, "C1": 0.25, "C2": 0.5}, weekly, meta, None)
+    assert an["short_history"] == ["C2"] and "C2" in an["missing_prices"]
+    assert "C2" not in an["risk_contribution"]
+    assert any("esclusi dall'analisi di rischio" in w for w in an["warnings"])

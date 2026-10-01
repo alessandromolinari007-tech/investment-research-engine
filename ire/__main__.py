@@ -93,8 +93,11 @@ def _dispatch(a) -> None:
     if a.cmd == "run":
         from .pipeline import Pipeline
 
-        Pipeline(mode=a.mode, extra_tickers=[t for t in a.tickers.split(",") if t], skip_deep=a.skip_deep,
-                 limit=a.limit).run()
+        pl = Pipeline(mode=a.mode, extra_tickers=[t for t in a.tickers.split(",") if t], skip_deep=a.skip_deep,
+                      limit=a.limit)
+        pl.run()
+        if pl.status == "degraded":
+            sys.exit(3)              # .bat files report "non completata"
     elif a.cmd == "status":
         from .db import init_db
 

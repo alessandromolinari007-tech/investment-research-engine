@@ -11,6 +11,8 @@ import pandas as pd
 from .metrics import MetricSet, compute_fundamental_metrics
 from .normalize.model import Financials
 from .risk import price_risk_metrics
+from .glossary import label as glabel
+from .thesis import HIST_GROWTH_KEYS
 from .sources.fx_macro import FxTable
 from .valuation import ReverseDCF, historical_multiples, percentile_vs_history, reverse_dcf
 
@@ -132,10 +134,11 @@ def analyze_company(company: dict[str, Any], fin: Financials, info: dict[str, An
               f"FCF base = {rd.fcf_base_method}. {rd.status}",
               fcf_base=rd.fcf_base, discount_rate=rd.discount_rate, risk_free_source=rd.risk_free_source)
         # compare like with like: implied growth of TOTAL FCF vs historical growth of TOTAL FCF (or revenue)
-        hist_g = m.val("fcf_cagr_5y") if m.val("fcf_cagr_5y") is not None else m.val("revenue_cagr_5y")
+        hist_key = next((k for k in HIST_GROWTH_KEYS if m.val(k) is not None), None)
+        hist_g = m.val(hist_key) if hist_key else None
         if rd.implied_g is not None and hist_g is not None:
             m.add("growth_gap", rd.implied_g - hist_g, "estimate", "",
-                  "crescita implicita nel prezzo − crescita storica 5 anni (FCF totale o ricavi). "
+                  f"crescita implicita nel prezzo − crescita storica ({glabel(hist_key).lower()}; in ordine di preferenza FCF totale 5 anni, ricavi 5 anni, ricavi 3 anni). "
                   "Negativo = il prezzo sembra scontare meno crescita di quella già realizzata (stima di modello)",
                   implied=rd.implied_g, historical=hist_g)
 

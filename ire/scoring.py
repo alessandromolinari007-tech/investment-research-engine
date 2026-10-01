@@ -62,6 +62,7 @@ FALLBACKS = {"revenue_cagr_5y": "revenue_cagr_3y", "roic_5y_median": "roic", "ro
 # markers: when the marker is 1 the metric is set to the WORST possible value (e.g. net debt with EBITDA ≤ 0)
 WORST_IF = {"net_debt_ebitda": "neg_ebitda_with_debt", "debt_equity": "neg_equity_with_debt"}
 CLIP = {"net_debt_ebitda": (-5.0, None)}      # huge net cash vs tiny EBITDA is not "infinitely" better
+REIT_ONLY_POOL = {"p_ffo", "dividend_yield", "ev_ebitda"}
 MIN_OBS = 5          # minimum companies with the metric in the comparison group
 FULL_CONF_OBS = 10   # below this, percentiles are shrunk towards the middle (small-sample noise)
 
@@ -80,16 +81,25 @@ FIN_POOL = "Finanza (banche, assicurazioni e intermediari insieme: gruppo di set
 ALL_POOL = "Universo intero non finanziario (settore con meno di {n} società)"
 
 
+def _is(row: pd.Series, key: str) -> bool:
+    """1/True flag; NaN or missing → False (NaN is truthy in Python)."""
+    v = row.get(key)
+    try:
+        return bool(v) and not pd.isna(v)
+    except (TypeError, ValueError):
+        return False
+
+
 def profile_of(row: pd.Series) -> str:
-    if row.get("is_banklike"):
+    if _is(row, "is_banklike"):
         return "bank"
-    if row.get("is_reit"):
+    if _is(row, "is_reit"):
         return "reit"
     return "normal"
 
 
 def peer_group_of(row: pd.Series) -> str:
-    if row.get("is_banklike"):
+    if _is(row, "is_banklike"):
         ind = str(row.get("industry") or "")
         if ind.startswith("Insurance"):
             return "Finanza — assicurazioni"
@@ -140,6 +150,12 @@ def score_universe(df: pd.DataFrame, weights: dict[str, float], min_peer: int = 
         p_pool, n_pool = _percentiles(col, pool)
         p = p_grp.where(~small, p_pool)
         n = n_grp.where(~small, n_pool)
+        if mname in REIT_ONLY_POOL:
+            # REIT valuation metrics (structurally high payouts, FFO) are ranked among REITs only, across sectors
+            reit = df["profile"] == "reit"
+            p_r, n_r = _percentiles(col.where(reit), reit.map({True: "reit", False: "other"}))
+            use = reit & (n_r >= MIN_OBS)
+            p, n = p.where(~use, p_r), n.where(~use, n_r)
         p = p.where(n >= MIN_OBS)
         shrink = (n / FULL_CONF_OBS).clip(upper=1.0)
         pct[mname] = 0.5 + (p - 0.5) * shrink
@@ -221,17 +237,19 @@ def score_universe(df: pd.DataFrame, weights: dict[str, float], min_peer: int = 
 
 
 def _composite(row: pd.Series, w: dict[str, float]) -> float:
+    # ONE availability rule for every weighting scheme (otherwise a single scheme failing its own threshold
+    # would wipe out the robust median): quality, valuation and at least 3 of the 5 pillars available
     if pd.isna(row.get("quality")) or pd.isna(row.get("valuation")):
         return np.nan
-    num, den, tot = 0.0, 0.0, sum(w.values())
+    if sum(pd.notna(row.get(p)) for p in PILLARS) < 3:
+        return np.nan
+    num, den = 0.0, 0.0
     for p, wt in w.items():
         v = row.get(p)
         if pd.notna(v):
             num += v * wt
             den += wt
-    if den < 0.6 * tot:
-        return np.nan
-    return num / den
+    return num / den if den > 0 else np.nan
 
 
 # ------------------------------------------------------------------ classification
@@ -255,6 +273,10 @@ HIGH = {"high"}
 BLOCKING = {"GOING_CONCERN_TEXT", "MATERIAL_WEAKNESS", "NON_RELIANCE_8K", "BANKRUPTCY_8K", "DELISTING_NOTICE_8K",
             "DEBT_ACCELERATION_8K", "HEAVY_DILUTION"}
 BLOCKING_IF_HIGH = {"LOW_INTEREST_COVERAGE", "HIGH_LEVERAGE"}
+# financial-risk flags that do not mean "deteriorating" but are incompatible with an unqualified "a sconto" label
+CAUTION_FLAGS = {"HIGH_LEVERAGE", "LOW_INTEREST_COVERAGE", "ALTMAN_DISTRESS", "UNCOVERED_DIVIDEND", "DILUTION",
+                 "NEGATIVE_EQUITY", "HIGH_ACCRUALS", "BENEISH_WARNING", "LATE_FILING", "AUDITOR_CHANGE_8K",
+                 "AUDITOR_CHANGE_TEXT", "RESTATEMENT_TEXT"}
 
 
 def _num(row, k):
@@ -272,7 +294,7 @@ def is_deteriorating(row: pd.Series, flags: list[dict]) -> list[str]:
     codes = {f["code"] for f in flags}
     for c, txt in (("REVENUE_DECLINE", "ricavi in calo nell'ultimo anno"), ("MARGIN_DETERIORATION", "margini in peggioramento"),
                    ("DEBT_SURGE", "debito in forte aumento"), ("NEGATIVE_FCF", "free cash flow negativo"),
-                   ("PERSISTENT_LOSSES", "perdite persistenti"), ("CYCLICAL_PEAK", "margini ai massimi del ciclo")):
+                   ("PERSISTENT_LOSSES", "perdite persistenti")):
         if c in codes:
             reasons.append(txt)
     r5, r3 = _num(row, "revenue_cagr_5y"), _num(row, "revenue_cagr_3y")
@@ -286,10 +308,22 @@ def is_deteriorating(row: pd.Series, flags: list[dict]) -> list[str]:
     fps = _num(row, "fcf_ps_cagr_5y")
     if fps is not None and fps < -0.05:
         reasons.append(f"free cash flow per azione in calo ({fps:.1%}/anno in 5 anni)")
+    return reasons
+
+
+def cautions(row: pd.Series, flags: list[dict]) -> list[str]:
+    """Not a deterioration, but enough to doubt that a low price is a real discount: they block the
+    'a sconto' labels without excluding the company (a rank in the sector is not a decline over time)."""
+    out = []
+    risky = [f for f in flags if f.get("code") in CAUTION_FLAGS and f.get("severity") in ("medium", "high")]
+    if risky:
+        out.append("altre segnalazioni: " + "; ".join(dict.fromkeys(f.get("message") or f["code"] for f in risky)))
+    if any(f.get("code") == "CYCLICAL_PEAK" for f in flags):
+        out.append("margini ai massimi del ciclo (i multipli bassi possono essere illusori)")
     g = _num(row, "growth")
     if g is not None and g < 25:
-        reasons.append("crescita tra le più deboli del settore")
-    return reasons
+        out.append("crescita tra le più deboli del settore")
+    return out
 
 
 def classify_row(row: pd.Series, flags: list[dict]) -> tuple[str, str]:
@@ -302,7 +336,12 @@ def classify_row(row: pd.Series, flags: list[dict]) -> tuple[str, str]:
              or (f.get("code") in BLOCKING_IF_HIGH and f.get("severity") == "high")]
     high = [f for f in flags if f.get("severity") in HIGH]
     if sev or block or len(high) >= 2:
-        which = "; ".join(f["message"] for f in (sev + block + high)[:2])
+        seen, msgs = set(), []
+        for f in sev + block + high:
+            if f.get("code") not in seen:
+                seen.add(f.get("code"))
+                msgs.append(f["message"])
+        which = "; ".join(msgs[:2])
         return C_REDFLAG, f"Segnali di rischio gravi: {which}"
     q, v, g = row.get("quality"), row.get("valuation"), row.get("growth")
     det = is_deteriorating(row, flags)
@@ -311,27 +350,42 @@ def classify_row(row: pd.Series, flags: list[dict]) -> tuple[str, str]:
     dd = _num(row, "drawdown_from_3y_high")
     depressed = dd is not None and dd <= -0.25
     qn, vn = (q if pd.notna(q) else 0), (v if pd.notna(v) else 0)
-    checks = "nessuno dei controlli automatici di deterioramento (ricavi, margini, cassa, debito, crescita pluriennale) è scattato"
-    if qn >= 70 and vn >= 65 and not det:
+    checks = ("nessuno dei controlli automatici di deterioramento (ricavi, margini, cassa, aumento del debito, crescita "
+              "pluriennale) né altre segnalazioni finanziarie sono scattati")
+    caut = cautions(row, flags)
+    vp = _num(row, "valuation_peers")
+    peers_cheap = vp is not None and vp >= 60       # "a sconto vs pari" must be true on PEER multiples alone
+    if qn >= 70 and vn >= 65 and not det and peers_cheap and not caut:
         extra = []
         if cheap_hist:
             extra.append("multipli bassi rispetto alla propria storia")
         if depressed:
             extra.append(f"prezzo {dd:.0%} dal massimo a 3 anni")
         if extra:
-            return (C_TEMP, "Alta qualità, multipli bassi rispetto ai pari e " + " e ".join(extra) + f"; {checks}. "
+            return (C_TEMP, f"Alta qualità, multipli bassi rispetto ai pari (economicità vs pari {vp:.0f}/100) e "
+                    + " e ".join(extra) + f"; {checks}. "
                     "È un'ipotesi da verificare: capire PERCHÉ il prezzo è sceso (notizie, guidance, settore).")
-        return C_QDISC, f"Alta qualità e multipli più bassi dei pari del settore; {checks}."
-    if vn >= 70 and (qn < 40 or det):
-        why = ", ".join(det) if det else "qualità bassa rispetto ai pari"
+        return C_QDISC, f"Alta qualità e multipli più bassi dei pari del settore (economicità vs pari {vp:.0f}/100); {checks}."
+    cyc = any(f.get("code") == "CYCLICAL_PEAK" for f in flags)
+    if vn >= 70 and (qn < 40 or det or cyc):
+        # cheap on peak-cycle margins is the textbook value trap
+        why = ", ".join(det + (["margini ai massimi del ciclo: utili probabilmente non ripetibili"] if cyc else [])) \
+            if (det or cyc) else "qualità bassa rispetto ai pari"
         return C_TRAP, f"Sembra economica, ma: {why}. Un prezzo basso può essere giustificato."
     if qn >= 70 and det:
         return C_QDET, "Qualità storicamente alta, ma: " + ", ".join(det) + ". Da monitorare prima di considerarla."
     if qn >= 70 and vn < 40:
-        return C_QFULL, "Azienda di qualità, ma il prezzo riflette già aspettative elevate (multipli alti vs pari)."
+        return C_QFULL, "Azienda di qualità, ma il prezzo riflette già aspettative elevate (valutazione alta vs pari e storia)."
     if qn >= 70:
-        return C_QFAIR, "Alta qualità a una valutazione nella media del settore."
-    note = f" Attenzione: {', '.join(det)}." if det else ""
+        why = "Alta qualità a una valutazione nella media del settore."
+        if vn >= 65:
+            why = ("Alta qualità; la valutazione complessiva è favorevole"
+                   + (" ma i multipli sono in linea con i pari (lo sconto viene da storia o crescita implicita)"
+                      if not peers_cheap else "") + ".")
+        if caut:
+            why += " Attenzione: " + ", ".join(caut) + "."
+        return C_QFAIR, why
+    note = f" Attenzione: {', '.join(det + caut)}." if (det or caut) else ""
     if pd.notna(g) and g >= 70 and vn < 35:
         return C_GROWTH, "Cresce molto, ma il prezzo sembra già scontare che la crescita continui a lungo." + note
     if vn >= 70:
@@ -348,11 +402,13 @@ def verdict_for(row: pd.Series, rf: float | None, flags: list[dict] | None = Non
     v = row.get("valuation_peers")
     if v is not None and pd.notna(v):
         if v >= 65:
-            sig.append(Signal("Rispetto ai concorrenti", "economica", f"multipli più bassi di circa il {v:.0f}% dei pari"))
+            sig.append(Signal("Rispetto ai concorrenti", "economica",
+                              f"multipli più bassi dei pari (economicità vs pari {v:.0f}/100)", 1.0, "rendimento"))
         elif v <= 35:
-            sig.append(Signal("Rispetto ai concorrenti", "costosa", f"più costosa di circa il {100 - v:.0f}% dei pari"))
+            sig.append(Signal("Rispetto ai concorrenti", "costosa",
+                              f"multipli più alti dei pari (economicità vs pari {v:.0f}/100)", 1.0, "rendimento"))
         else:
-            sig.append(Signal("Rispetto ai concorrenti", "ragionevole", "multipli in linea con il settore"))
+            sig.append(Signal("Rispetto ai concorrenti", "ragionevole", "multipli in linea con il settore", 1.0, "rendimento"))
     hist_keys = ("pe_vs_history_pct", "ev_ebit_vs_history_pct", "p_fcf_vs_history_pct")
     hist = [_num(row, k) for k in hist_keys]
     hist = [h for h in hist if h is not None]
@@ -370,7 +426,7 @@ def verdict_for(row: pd.Series, rf: float | None, flags: list[dict] | None = Non
     ig, gap = _num(row, "implied_fcf_growth"), _num(row, "growth_gap")
     if ig is not None:
         if ig > 0.15:
-            sig.append(Signal("Crescita implicita nel prezzo", "costosa", f"il prezzo è coerente con circa {ig:.0%} di crescita annua del FCF per 10 anni (stima di modello)"))
+            sig.append(Signal("Crescita implicita nel prezzo", "costosa", f"il prezzo è coerente con circa {ig:.0%} di crescita annua del FCF (stima di modello)"))
         elif gap is not None:
             if gap <= -0.03 and cyclical_peak:
                 sig.append(Signal("Crescita implicita nel prezzo", "ragionevole",
@@ -383,25 +439,27 @@ def verdict_for(row: pd.Series, rf: float | None, flags: list[dict] | None = Non
                                   f"il prezzo è coerente con ~{ig:.1%}/anno, più della crescita storica (~{ig - gap:.1%})"))
             else:
                 sig.append(Signal("Crescita implicita nel prezzo", "ragionevole", f"crescita implicita ~{ig:.1%}, simile alla storica"))
-    ey = _num(row, "earnings_yield_after_tax") if not row.get("is_banklike") else _num(row, "earnings_yield_equity")
-    lbl = "rendimento operativo dopo le tasse" if not row.get("is_banklike") else "rendimento degli utili"
+    ey = _num(row, "earnings_yield_after_tax") if not _is(row, "is_banklike") else _num(row, "earnings_yield_equity")
+    lbl = "rendimento operativo dopo le tasse" if not _is(row, "is_banklike") else "rendimento degli utili"
     if ey is not None and rf is not None:
         if ey >= rf + 0.03:
-            sig.append(Signal("Rendimento vs tassi", "economica", f"{lbl} {ey:.1%} vs titoli di Stato {rf:.1%}", 0.5))
+            sig.append(Signal("Rendimento vs tassi", "economica", f"{lbl} {ey:.1%} vs titoli di Stato {rf:.1%}", 0.5, "rendimento"))
         elif ey <= rf + 0.005:
-            sig.append(Signal("Rendimento vs tassi", "costosa", f"{lbl} {ey:.1%}, inferiore o simile ai titoli di Stato {rf:.1%}", 0.5))
+            sig.append(Signal("Rendimento vs tassi", "costosa", f"{lbl} {ey:.1%}, inferiore o simile ai titoli di Stato {rf:.1%}",
+                              0.5, "rendimento"))
         else:
-            sig.append(Signal("Rendimento vs tassi", "ragionevole", f"{lbl} {ey:.1%} vs titoli di Stato {rf:.1%}", 0.5))
+            sig.append(Signal("Rendimento vs tassi", "ragionevole", f"{lbl} {ey:.1%} vs titoli di Stato {rf:.1%}", 0.5, "rendimento"))
     return valuation_verdict(sig)
 
 
 def confidence_of(row: pd.Series, flags: list[dict]) -> str:
     cov = row.get("coverage") or 0
     lvl = 2 if cov >= 0.8 else 1 if cov >= 0.6 else 0
-    if row.get("data_tier") == "B":
-        lvl -= 1
+    # Yahoo data (tier B), a short history and a lower metric coverage are the SAME weakness (thin data:
+    # Yahoo gives ~4 years and fewer line items): they lower the level once, not two or three times
     yrs = row.get("years_of_data")
-    if yrs is not None and pd.notna(yrs) and yrs < 5:
+    short = yrs is not None and pd.notna(yrs) and yrs < 5
+    if (row.get("data_tier") == "B" or short) and lvl == 2:
         lvl -= 1
     if sum(1 for f in flags if f.get("severity") == "data") >= 2:
         lvl -= 1
