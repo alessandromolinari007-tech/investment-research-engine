@@ -6,55 +6,23 @@ Deve scandire il più ampio universo di azioni acquistabili (USA, Europa, UK, Gi
 Deve essere riusabile nel tempo (ri-scansione, "cosa è cambiato", deterioramenti), trasparente (dato→fonte→data→metodo→assunzione) e comprensibile. Regola più importante: niente dati finti, niente numeri hardcoded, niente mockup.
 Specifica originale completa: file `attachment.txt` caricato dall'utente nella prima sessione (19 sezioni). Non è nel repo: da definire se aggiungerlo (vedi §9).
 
-## 2. Stato attuale
-Repository: https://github.com/alessandromolinari007-tech/investment-research-engine (ramo `main`). Visibilità del repo: da definire / da verificare.
-Test offline: `python -m pytest -q` → 11 passed (Python 3.11, sandbox cloud). `pytest.ini` limita la raccolta a `tests/`.
-UI: `scripts/dev_offline_run.py` + `scripts/dev_ui_test.py` → 7 pagine su 7 renderizzate senza eccezioni (DB sintetico, dopo le ultime modifiche).
-Ultimo run offline sintetico: soglia percentile abbassata 70→60, portafoglio con 12 posizioni; 3 vincoli riportati come NON rispettati (peso max per titolo 12% vs 8%, settore 41,5% vs 25%, Nord America 88% vs 65%). È atteso: il mondo sintetico è piccolo e concentrato.
+## 2. Stato attuale (aggiornato al 2026-10-01)
+Repository: https://github.com/alessandromolinari007-tech/investment-research-engine (ramo `main`). Visibilità del repo: da verificare.
+Test offline: `python -m pytest -q` → 120 passed (Python 3.11, sandbox cloud). `pytest.ini` limita la raccolta a `tests/`.
+UI: `scripts/dev_offline_run.py` + `scripts/dev_ui_test.py` → 7 pagine su 7 senza eccezioni (DB sintetico).
+Test end-to-end con dati REALI: MAI eseguito. Python 3.12 autorizzato dall'utente (lo installa lui con winget); l'utente lancia `first_run_test.bat` e riporta `logs\first_run.log`.
+
+### Fatto in questa sessione (commit e3111be → 328f4b6 + successivi)
+- Blocco 1: `app/app.py` e `ire/changes.py` usano le costanti di classe di `ire/scoring.py` (sezione 💎 non più vuota).
+- Blocco 2: chiusi i punti 1-9 della vecchia lista bug (prezzi/refresh/split, rate limit Yahoo, memoria download, cambi, changes, app, .bat, config, tesi). Contatto SEC in `config.local.toml` (in .gitignore).
+- Blocco 3: test di metodologia (`tests/test_methodology.py`), `METHODOLOGY.md`, README, glossario completo.
+- Blocco 4: secondo red team con 5 subagenti (quant, analista finanziario, data engineer, portafoglio, scettico/UX): circa 55 rilievi, corretti in 3 commit (dettagli nei messaggi di commit e in §7). Riverifica con subagenti indipendenti: vedi §7.
 
 ### Funziona (testato SOLO offline, con dati sintetici)
-- Pipeline completa in 9 stadi: macro (FX BCE + tassi FRED) → universo → prezzi → bilanci → FX extra → analisi → scoring → analisi testuale filing ("deep") → portafoglio → diff con l'analisi precedente.
-- Normalizzazione SEC XBRL companyfacts (tier A) e Yahoo statements (tier B), TTM, split, restatement, provenienza di ogni fatto nel DB.
-- Circa 80 metriche, scoring relativo al settore, classificazione, verdetto di valutazione, tesi in italiano, red flag, portafoglio, UI Streamlit con 7 pagine.
-- Red team (6 subagent: Quant, Financial Analyst, Data Engineer, Portfolio Specialist, Skeptic, UX/Software) eseguito UNA volta. Correzioni in parte applicate (vedi sotto).
-
-### Correzioni del red team GIÀ applicate
-- Debito/capex/SBC mai riportati NON più assunti = 0. Il debito è assunto 0 solo se non ci sono interessi passivi e le passività non correnti sono < 15% dell'attivo (flag `ASSUMED_ZERO_DEBT`, severity "data"). Altrimenti `DEBT_UNKNOWN` / `CAPEX_UNKNOWN` / `DEBT_PARTIAL`. Metriche basate su voci assunte hanno `kind="assumption"`.
-- Più concetti XBRL per debito/capex. Commercial paper non più persa (`LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities` spostato in `debt_lt_total`). Leasing IFRS 16 aggiunti al debito e sottratti dal FCF (solo filer IFRS). Azioni privilegiate escluse da P/B e ROE; nuovo P/TBV per banche. Rimossi i concetti `...BeforeIncomeTaxesDomestic`, D&A IFRS con impairment e `InterestExpenseNet`.
-- Yahoo: capex/SBC mancanti restano NaN; un valore positivo di "Net Business Purchase And Sale" (dismissione) dà acquisizioni = 0.
-- Scoring: percentile mid-rank `(rank−0.5)/n`; minimo 5 osservazioni; shrinkage verso 50 sotto 10. I settori piccoli si confrontano con tutto l'universo non finanziario, le finanziarie con tutta la finanza. Gruppi separati per banche, assicurazioni e altri intermediari. Fallback senza doppio conteggio (pesi fusi). Valore "peggiore" per debito netto con EBITDA ≤ 0 e per debito con patrimonio ≤ 0; clip di ND/EBITDA a −5. Nuovo punteggio `valuation_peers` (solo multipli vs pari).
-- Classificazione: etichette come costanti in `ire/scoring.py` (C_TEMP, C_QDISC, C_QFAIR, C_QFULL, C_QDET, C_TRAP, C_REDFLAG, C_GROWTH, C_CHEAP, C_AVG, C_NODATA). Un singolo flag in `BLOCKING` → "Red flag". Deterioramento anche pluriennale (CAGR ricavi, trend margini, FCF/azione, pilastro crescita < 25). Nuova classe "Qualità in deterioramento". Testi meno assertivi.
-- Verdetto: 4 segnali su evidenze diverse (pari / storia / reverse DCF vs crescita / rendimento operativo dopo tasse vs titoli di Stato, soglia rf+3%). Confidenza basata su quanta evidenza sostiene il verdetto e sull'assenza di segnali opposti. Segnali "economici" soppressi se c'è il flag `CYCLICAL_PEAK`.
-- Reverse DCF: soluzione fuori intervallo → None. Base FCF solo se tutti gli ultimi anni sono > 0. Crescita perpetua ≤ risk-free della valuta. EV storico calcolato come quello attuale. `growth_gap` usa la crescita del FCF totale (`fcf_cagr_5y`).
-- Nuovi flag: `CYCLICAL_PEAK` (margine attuale > 1,5× mediana di ciclo), `ONE_OFF_ITEMS` (info).
-- Analisi testuale filing riscritta per frase: scarta frasi ipotetiche e negate, normalizza gli apostrofi curvi, cerca nuovi flag `AUDITOR_CHANGE_TEXT` e `IMPAIRMENT_TEXT`. L'analisi "deep" copre i primi `deep_analysis_top_n` (150) + tutte le società candidabili al portafoglio, fino a `deep_analysis_max` (400). Nel payload: `performed`; nel detail degli score: `deep_analysis`.
-- Portafoglio (`ire/portfolio.py` riscritto):
-  - idoneità con ≥ `min_weeks_3y` (130) settimane recenti; correlazione ignota = scarto;
-  - soglia di percentile abbassata 70→60→50 se servono più titoli; sotto `min_positions` (12) lo stato è "non proposto";
-  - SLSQP con limiti per titolo, settore e AREA; ogni vincolo è riportato in `constraints` (configurato vs effettivo, `rispettato`);
-  - `holding_bonus`, `no_trade_band`, `turnover`;
-  - ruoli con soglie assolute; covarianza senza `fillna(0)`; benchmark sulla stessa finestra; `weighted_geo_mean_mcap_eur`.
-- Pipeline/dati:
-  - migrazioni colonne; run interrotti marcati `interrupted`;
-  - `companies` aggiornata con `upsert_merge` + reset `in_universe=0` a ogni run;
-  - companyfacts 404 → fallback Yahoo; circuit breaker dopo 15 errori SEC consecutivi;
-  - senza User-Agent SEC gli USA vengono saltati (non bloccano il run).
-- HTTP: limiter unico per `*.sec.gov` (con lock); scritture cache atomiche; cache corrotta cancellata e riscaricata; 403 SEC "rate threshold" → attesa e retry; risposta non-JSON su URL `.json` mai in cache.
-- Nuove colonne `companies.liquidity_usd`, `market_cap_usd`, `forced`; i ticker aggiunti a mano sotto soglia di liquidità sono esclusi dalla PROPOSTA di portafoglio.
-- UI: la pagina Classifica andava in errore se una metrica mancava per tutte le società (ora `app/data.py` crea sempre le colonne di `KEY_METRICS`).
-
-### A metà
-- FATTO (blocco 1): `app/app.py` e `ire/changes.py` importano le costanti di classe da `ire/scoring.py`; la sezione "💎" della Panoramica si popola. Test di regressione in `tests/test_ui_labels.py`; fixture `world` spostata in `tests/conftest.py`. La UI non mostra ancora `status`, `constraints`, `turnover` e `exited` del portafoglio.
-- FATTO (blocco 3): `METHODOLOGY.md` in italiano (mostrato nella tab Metodologia), README completato, glossario senza voci vuote.
-
-### Non ancora iniziato
-- Test end-to-end con dati REALI (mai eseguito: SEC/Yahoo/FRED/BCE/Wikipedia non raggiungibili dal sandbox cloud, proxy 403).
-- FATTO (blocco 3): test unitari in `tests/test_methodology.py` (scoring, classificazione, verdetto/confidenza, reverse DCF, testo dei filing, vincoli e stato del portafoglio).
-- Secondo ciclo di red team (obbligatorio da specifica).
-- Report finale all'utente (§6).
+Pipeline in 9 stadi, normalizzazione SEC/Yahoo, ~80 metriche, punteggi, classificazione, verdetto, tesi, red flag, portafoglio, diff, UI a 7 pagine, controllo di salute delle esecuzioni (stato `degraded`), lock contro esecuzioni parallele.
 
 ## 3. Stack e ambiente
-- Python. Sandbox cloud: 3.11.15. PC utente: Python NON installato (verificato). Target: Windows 11.
+- Python. Sandbox cloud: 3.11.15. PC utente: Python 3.12 (installazione autorizzata, fatta dall'utente). Target: Windows 11.
 - Versioni nel sandbox: pandas 3.0.2, numpy 2.4.4, yfinance 1.7.0, streamlit 1.64.0, plotly 7.1.0, scipy 1.17.1, requests 2.33.1, lxml 6.1.0, beautifulsoup4 4.14.3, html5lib 1.1, pytest 9.1.1. Vincoli in `requirements.txt`.
 - SQLite in `data/` (config `[general] data_dir`); cache HTTP gzip in `data/cache/`.
 - Fonti (gratuite):
@@ -71,6 +39,8 @@ Ultimo run offline sintetico: soglia percentile abbassata 70→60, portafoglio c
   - CLI: `python -m ire check | configure | run [--mode quick|standard|full] [--tickers AAPL,ENI.MI] [--skip-deep] [--limit N] | status | app | watch add|remove|list TICKER`
   - Windows: `setup.bat`, `run_quick_test.bat`, `run_pipeline.bat`, `run_app.bat`, `first_run_test.bat` (non interattivo, log in `logs\first_run.log`).
 - Variabili d'ambiente: `IRE_CONFIG` (percorso config), `IRE_SEC_USER_AGENT` (sovrascrive `[sec] user_agent`), `IRE_TEST_PAGE` (usata solo dai test UI).
+- `config.local.toml` (accanto a config.toml, in .gitignore): impostazioni personali, sovrascrive config.toml. `python -m ire configure [--check]`.
+- Exit code di `python -m ire run`: 0 ok, 1 errore, 2 config non valida, 3 esecuzione incompleta (`degraded`).
 
 ## 4. Struttura dei file
 - `config.toml` — tutte le impostazioni, commentate in italiano:
@@ -96,6 +66,7 @@ Ultimo run offline sintetico: soglia percentile abbassata 70→60, portafoglio c
 - `ire/scoring.py` — pilastri, `score_universe`, `classify_row`, `verdict_for`, `confidence_of`, costanti delle classi.
 - `ire/thesis.py`, `ire/glossary.py` (86 voci, 32 con spiegazione vuota), `ire/portfolio.py`, `ire/changes.py`, `ire/pipeline.py`, `ire/selfcheck.py`.
 - `app/app.py` (UI Streamlit, 7 pagine: Panoramica, Scheda azienda, Confronta, Classifica e filtri, Portafoglio, Cambiamenti e watchlist, Dati e metodologia), `app/data.py`, `app/charts.py`.
+- `tests/`: `conftest.py` (fixture `world`), `test_methodology.py`, `test_financials_redteam.py`, `test_data_sources.py`, `test_config_changes.py`, `test_ui_labels.py` (AppTest).
 - `tests/fixtures/builders.py` (companyfacts SINTETICI), `tests/fixtures/fake_world.py` (mondo sintetico; US05 ha 8-K 4.02 e material weakness), `tests/test_sec_normalize.py`, `tests/test_pipeline_offline.py`.
 
 Sul PC dell'utente (`C:\Users\aless\source`) esistono:
@@ -128,80 +99,31 @@ La fonte di verità è GitHub.
 - Budget: piano Claude Pro. Non inventare consumi di token; essere concisi; niente lavoro cosmetico.
 - Report finale con SOLO queste sezioni: 1 COSA HAI COSTRUITO, 2 PERCHÉ HAI SCELTO QUESTO PROGETTO, 3 COSA PUÒ FARE, 4 COSA HAI ANALIZZATO, 5 METODOLOGIA, 6 LIMITAZIONI, 7 RISULTATI DEL RED TEAM, 8 COME POSSO USARLO, 9 COME POTREBBE EVOLVERE.
 - Privacy e sicurezza:
-  - non mettere l'email dell'account (`[email rimossa]`) nel User-Agent SEC senza ok esplicito; `user_agent = ""` nel repo;
+  - l'email dell'utente non va MAI scritta in file versionati (né nel codice né qui); il contatto SEC vive solo sul PC (`config.toml` locale o `config.local.toml`); nel repo `user_agent = ""`;
   - non toccare i file personali dell'utente; mai cancellare suoi file; nessuna operazione di trading.
 - Git: commit con trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; push su `main` a ogni blocco completato.
 
 ## 7. Problemi noti e bug aperti
-**Blocco 2 (ottobre 2026): i punti 1-9 sotto sono stati CORRETTI** (dettagli nel commit "Chiude le correzioni del red team"), più i minori `CON` su Windows e codici Nikkei alfanumerici. Restano aperti i punti 10 (limitazioni dichiarate) e 11.
-Nuovo: contatto SEC in `config.local.toml` (non versionato, scritto da `configure`); `config.toml` resta con `user_agent = ""`. Test: `tests/test_data_sources.py`, `tests/test_config_changes.py`, `tests/test_ui_labels.py`.
-1. `ire/prices.py`: dopo il primo run lo storico completo non viene mai riscaricato (`get_recent` aggiorna `fetched_at`, quindi `get_full` lo crede fresco). Gli split successivi rompono le serie e `splits` non si aggiorna. Fix previsto:
-   - usare `price_meta.full_fetched_at`;
-   - confrontare le date sovrapposte (scarto > 0,5% → riscaricare con `actions=True`);
-   - non ereditare `requested_start` da un refresh parziale.
-2. Yahoo: con rate limit yfinance 1.7 restituisce frame vuoti senza eccezione, che finiscono in cache come freschi (prezzi 20 h, statements 7 giorni, info 20 h). Fix: non mettere in cache i risultati vuoti, retry con attesa se più del 50% del batch è vuoto, batch più piccoli, `threads=False`.
-3. `_download_store`: tutto in memoria (`iterrows`, circa 2,7 GB stimati per 3000 ticker) e commit solo alla fine. Fix: scrittura e commit per batch, `itertuples`/numpy.
-4. `fx_macro.py`: il forward-fill rende "fresca" una valuta morta (es. RUB) e il controllo di 10 giorni non vale con `on=None`. Fix: età misurata sull'ultima osservazione reale, `ffill(limit=…)`.
-5. `changes.py`: i flag testuali appaiono come "Nuova segnalazione" quando una società entra nel top-N; il diff confronta run di modalità diverse; le esclusioni temporanee sembrano uscite dall'universo; etichette vecchie.
-6. `app/app.py`:
-   - **Crash**: "Analizza il MIO portafoglio" va sempre in errore (`if hc:` su una Series): passare il risultato a `ire.pipeline._serializable`.
-   - **Avvio**: il prompt "Email:" di Streamlit al primo avvio blocca `run_app.bat` (aggiungere `--server.showEmailPrompt false`).
-   - **Etichette e campi**: vecchie etichette di classificazione; mostrare `status`, `constraints`, `turnover`, `exited`, `missing_prices` e `valuation_peers`.
-   - **Trasparenza ed errori**:
-     - glossario mai mostrato (`explain` importato ma non usato);
-     - run falliti o interrotti invisibili;
-     - "Nessuna segnalazione" mostrato anche quando l'analisi testuale non è stata eseguita: usare `payload.performed` / `detail.deep_analysis`.
-   - **Calcoli e valori mostrati**:
-     - capitalizzazioni in valute diverse confrontate tra loro (usare `market_cap_eur`);
-     - il DCF interattivo mostra "inf" se tasso ≤ crescita;
-     - "confidenza None";
-     - float grezzi in Confronta;
-     - slider con valore iniziale fuori range.
-   - **Testi e formato**: `$` interpretato come LaTeX; CSV non adatto a Excel italiano (servono `sep=";"`, `decimal=","`, utf-8-sig); settori non tradotti negli avvisi.
-   - **Varie**: tab Metodologia vuota; `compute_changes` non in cache; connessione SQLite condivisa tra sessioni.
-7. `.bat`: non verificano che `.venv` esista; `run_app.bat` non ha `pause`; `setup.bat` e `first_run_test.bat` scrivono "Fatto" anche quando un passo fallisce; `first_run_test.bat` non chiama `configure`.
-8. Config: un percorso Windows con `\` dà un traceback TOML in inglese; un `mode` non valido passa in silenzio; `configure` scrive "Salvato" senza aver scritto nulla se `user_agent` non è vuoto.
-9. `ire/thesis.py`: frasi da ammorbidire ("il mercato si aspetta…"). Verificare che con il mid-rank non compaia più "meglio del 100%".
-10. Minori o non confermati:
-    - nome file cache = ticker (`CON` è riservato su Windows);
-    - codici Nikkei alfanumerici scartati;
-    - somma delle classi di azioni su un `set`;
-    - capitalizzazione con azioni non diluite;
-    - dividendi da `PaymentsOfDividends`;
-    - tasso di sconto uguale per tutti;
-    - capitale investito semplificato;
-    - progetto sotto OneDrive = rischio per SQLite;
-    - serie FRED mensili e in ritardo;
-    - 6-K non analizzati;
-    - bias di sopravvivenza dell'universo internazionale (membri ATTUALI degli indici);
-    - la "robustezza" del punteggio riguarda solo i 5 schemi di pesi.
-11. PC utente: Python non installato (`first_run_test.bat` → "Python non trovato"); User-Agent SEC non configurato; nessun test reale eseguito.
-12. Già risolti in passato:
-    - `use_container_width` → `width="stretch"`;
-    - SQLite tra thread Streamlit → `check_same_thread=False`;
-    - vincolo di settore violato dopo la rinormalizzazione → SLSQP;
-    - `CONFIG_PATH` deve essere `Path`, non `str`;
-    - pytest raccoglieva `scripts/dev_ui_test.py` → `pytest.ini`.
+Corretti (non riaprire senza motivo): tutta la vecchia lista §7 punti 1-9 e i rilievi del secondo red team (vedi commit "Red team 2 (parte 1/2/3)").
+Aperti / limitazioni dichiarate (in METHODOLOGY.md §13):
+- Debiti a breve: ShortTermBorrowings e CommercialPaper non vengono sommati (possibile inclusione reciproca): può sottostimare.
+- Capex sintetico: se il totale PP&E esclude il petrolio&gas ma è maggiore delle altre voci, si prende solo il totale.
+- Bias di sopravvivenza dell'universo internazionale; tasso di sconto uguale per valuta; capitale investito semplificato; FRED mensile; 6-K non analizzati; analisi testuale lessicale.
+- Le tabelle `companies` e `facts` sono globali: una run fallita può modificare esclusioni e fatti mostrati accanto ai punteggi dell'ultima run completa.
+- Formati numerici: le colonne `st.column_config` usano il formato di Streamlit (punto decimale).
+- Progetto sotto OneDrive = rischio per SQLite (non verificato).
+Esito della riverifica (subagenti): da aggiornare quando arriva.
 
 ## 8. Prossimi passi (in ordine)
-1. **Verifica (primo passo operativo):**
-   - `pip install -r requirements.txt` → `python -m pytest -q` (atteso 11 passed);
-   - `python scripts/dev_offline_run.py` (annotare la cartella `DATA`);
-   - `IRE_CONFIG=<DATA>/config.toml python scripts/dev_ui_test.py` (atteso 0 eccezioni sulle 7 pagine).
-2. Allineare `app/app.py` e `ire/changes.py` alle costanti di `ire/scoring.py` (importarle, niente stringhe duplicate); mostrare i nuovi campi del portafoglio; correggere il crash di "mio portafoglio" e il prompt email di Streamlit (§7 punti 5-6).
-3. Correggere `prices.py`, `yahoo.py` e `fx_macro.py` (§7 punti 1-4) con test unitari che simulano yfinance (monkeypatch).
-4. Launcher `.bat`, validazione della config, `configure` (§7 punti 7-8); wording di `thesis.py`.
-5. Test unitari: `qualitative.text_red_flags` con frasi reali e ipotetiche; `classify_row` (going concern, declino pluriennale); verdetto e confidenza; reverse DCF; mid-rank e pool; vincoli di area e stato "non proposto".
-6. `METHODOLOGY.md` in italiano e README più completo; mostrarli nella tab Metodologia.
-7. Secondo ciclo di red team con subagent indipendenti; verificare, correggere, ripetere finché è ragionevole.
-8. Test end-to-end REALE sul PC (serve §9 punti 1-2): `setup.bat` → `python -m ire check` → `run_quick_test.bat` → correzioni → `run_app.bat`. Se la sessione è collegata al PC, la cartella collegata è `C:\Users\aless\source`; altrimenti l'utente scarica il repo e lancia i `.bat`.
-9. Commit e push dopo ogni blocco.
-10. Report finale con le sole 9 sezioni (§6).
+1. Chiudere i rilievi della riverifica del red team 2 (se presenti) con test; pytest + dev_offline_run + dev_ui_test verdi; commit e push.
+2. Quando l'utente incolla `logs\first_run.log` dal PC: correggere ciò che emerge dai dati reali (SEC, Yahoo, BCE, FRED, Wikipedia), con test che riproducono il caso senza rete.
+3. Poi `run_quick_test.bat` → `run_app.bat` sul PC e correzioni.
+4. Report finale all'utente con le sole 9 sezioni (§6).
 
 ## 9. Domande aperte (decide l'utente)
-1. Ok a installare Python 3.12 sul PC (`winget install Python.Python.3.12`, circa 25 MB) e le librerie da PyPI (circa 150-250 MB in `.venv`)? Chiesto, nessuna risposta.
-2. Contatto per lo User-Agent SEC: "Nome Cognome email", oppure ok a usare `[email rimossa]`? Chiesto, nessuna risposta. Senza contatto il motore gira solo sui mercati non USA.
-3. Visibilità del repository GitHub: da definire / da verificare.
+1. RISOLTA: Python 3.12 sul PC autorizzato (installazione fatta dall'utente con winget).
+2. RISOLTA: contatto SEC già nel config.toml sul PC dell'utente; nel repository `user_agent = ""` e l'email non va MAI in file versionati. `configure` ora scrive in `config.local.toml` (escluso da git).
+3. Visibilità del repository GitHub: da verificare.
 4. Aggiungere al repo la specifica originale `attachment.txt`? Da definire.
 5. Modalità predefinita (`quick` / `standard` / `full`): oggi `standard`, mai confermata dall'utente.
 6. Cancellazione dei file `ire_p*.txt` e `ire_verify.bat` in `C:\Users\aless\source` (può farlo solo l'utente).
