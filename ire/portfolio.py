@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .classify import SECTOR_IT
 from .scoring import C_NODATA, C_QDET, C_REDFLAG, C_TRAP, QUALITY_DISCOUNT
 
 EXCLUDED_CLASSES = {C_REDFLAG, C_TRAP, C_NODATA, C_QDET}
@@ -108,7 +109,7 @@ def _select(info: pd.DataFrame, corr: pd.DataFrame, target: int, max_corr: float
                 continue
             sec, reg = r["_sector"], r["_region"]
             if sector_count.get(sec, 0) >= sector_max_n:
-                rejected[cid] = f"limite settore {sec}"
+                rejected[cid] = f"limite settore {SECTOR_IT.get(sec, sec)}"
                 continue
             if region_count.get(reg, 0) >= region_max_n.get(reg, target):
                 rejected[cid] = f"limite area {reg}"
@@ -303,7 +304,7 @@ def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: fl
                    "rispettato": bool(out.min() >= min_w - 1e-6)})
     sec_w = out.groupby(sectors).sum()
     report.append({"vincolo": "peso massimo per settore", "configurato": max_sector, "effettivo": float(sec_w.max()),
-                   "rispettato": bool(sec_w.max() <= max_sector + 1e-6), "dettaglio": sec_w.idxmax()})
+                   "rispettato": bool(sec_w.max() <= max_sector + 1e-6), "dettaglio": SECTOR_IT.get(sec_w.idxmax(), sec_w.idxmax())})
     reg_w = out.groupby(regions).sum()
     for r_, v in reg_w.items():
         cap = float(region_caps.get(r_, 1.0))
@@ -455,7 +456,6 @@ def analyze_portfolio(weights: dict[str, float], weekly: pd.DataFrame, meta: pd.
     top = w.sort_values(ascending=False)
     if top.iloc[0] > 0.15:
         warnings.append(f"Posizione più grande = {top.iloc[0]:.0%}: rischio specifico concentrato")
-    from .classify import SECTOR_IT
     for sec, x in out.get("sector_exposure", {}).items():
         if x > 0.35:
             warnings.append(f"Settore {SECTOR_IT.get(sec, sec)} = {x:.0%} del portafoglio")
@@ -469,4 +469,17 @@ def analyze_portfolio(weights: dict[str, float], weekly: pd.DataFrame, meta: pd.
     if missing:
         warnings.append(f"{len(missing)} titoli senza prezzi utilizzabili esclusi dall'analisi di rischio")
     out["warnings"] = warnings
+    return out
+
+
+def serializable(an: dict[str, Any]) -> dict[str, Any]:
+    """JSON-friendly copy of analyze_portfolio's output (DataFrame/Series → dict of lists)."""
+    out = {}
+    for k, v in an.items():
+        if isinstance(v, pd.DataFrame):
+            out[k] = {"index": list(v.index), "columns": list(v.columns), "values": np.round(v.values.astype(float), 4).tolist()}
+        elif isinstance(v, pd.Series):
+            out[k] = {"index": [str(i.date()) if hasattr(i, "date") else str(i) for i in v.index], "values": [float(x) for x in v.values]}
+        else:
+            out[k] = v
     return out

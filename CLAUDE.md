@@ -44,7 +44,6 @@ Ultimo run offline sintetico: soglia percentile abbassata 70→60, portafoglio c
 - UI: la pagina Classifica andava in errore se una metrica mancava per tutte le società (ora `app/data.py` crea sempre le colonne di `KEY_METRICS`).
 
 ### A metà
-- `price_meta.full_fetched_at` è nello schema e nella migrazione, ma `ire/prices.py` NON la usa ancora (§7, bug 1).
 - FATTO (blocco 1): `app/app.py` e `ire/changes.py` importano le costanti di classe da `ire/scoring.py`; la sezione "💎" della Panoramica si popola. Test di regressione in `tests/test_ui_labels.py`; fixture `world` spostata in `tests/conftest.py`. La UI non mostra ancora `status`, `constraints`, `turnover` e `exited` del portafoglio.
 - README minimale presente. `METHODOLOGY.md` NON esiste: è citato in `ire/normalize/sec_facts.py` e la tab Metodologia è vuota.
 
@@ -134,6 +133,8 @@ La fonte di verità è GitHub.
 - Git: commit con trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; push su `main` a ogni blocco completato.
 
 ## 7. Problemi noti e bug aperti
+**Blocco 2 (ottobre 2026): i punti 1-9 sotto sono stati CORRETTI** (dettagli nel commit "Chiude le correzioni del red team"), più i minori `CON` su Windows e codici Nikkei alfanumerici. Restano aperti i punti 10 (limitazioni dichiarate) e 11.
+Nuovo: contatto SEC in `config.local.toml` (non versionato, scritto da `configure`); `config.toml` resta con `user_agent = ""`. Test: `tests/test_data_sources.py`, `tests/test_config_changes.py`, `tests/test_ui_labels.py`.
 1. `ire/prices.py`: dopo il primo run lo storico completo non viene mai riscaricato (`get_recent` aggiorna `fetched_at`, quindi `get_full` lo crede fresco). Gli split successivi rompono le serie e `splits` non si aggiorna. Fix previsto:
    - usare `price_meta.full_fetched_at`;
    - confrontare le date sovrapposte (scarto > 0,5% → riscaricare con `actions=True`);

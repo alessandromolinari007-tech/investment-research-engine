@@ -62,7 +62,8 @@ def _clean_symbol(raw: str, idx: IndexDef) -> str | None:
     s = s.split(":")[-1].strip()              # 'XETRA: SAP' -> 'SAP'
     s = s.split()[0] if s.split() else s
     if idx.kind == "numeric4":
-        m = re.search(r"\d{4}", s)
+        # TSE codes: 4 digits, or (since 2024) alphanumeric like "285A" (letters B E I O Q V Z are not used)
+        m = re.search(r"(?<![0-9A-Z])[0-9][0-9ACDFGHJKLMNPRSTUWXY][0-9][0-9ACDFGHJKLMNPRSTUWXY](?![0-9A-Z])", s.upper())
         return f"{m.group(0)}{idx.suffix}" if m else None
     if idx.kind == "hk":
         m = re.search(r"\d{1,5}", s)

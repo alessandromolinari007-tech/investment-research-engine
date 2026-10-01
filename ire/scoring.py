@@ -333,7 +333,7 @@ def classify_row(row: pd.Series, flags: list[dict]) -> tuple[str, str]:
         return C_QFAIR, "Alta qualità a una valutazione nella media del settore."
     note = f" Attenzione: {', '.join(det)}." if det else ""
     if pd.notna(g) and g >= 70 and vn < 35:
-        return C_GROWTH, "Cresce molto, ma il prezzo richiede che continui a lungo." + note
+        return C_GROWTH, "Cresce molto, ma il prezzo sembra già scontare che la crescita continui a lungo." + note
     if vn >= 70:
         return C_CHEAP, "Prezzo basso rispetto ai pari con qualità nella media: serve capire il perché." + note
     return C_AVG, "Nessun tratto distintivo rispetto al settore." + note
@@ -370,17 +370,17 @@ def verdict_for(row: pd.Series, rf: float | None, flags: list[dict] | None = Non
     ig, gap = _num(row, "implied_fcf_growth"), _num(row, "growth_gap")
     if ig is not None:
         if ig > 0.15:
-            sig.append(Signal("Crescita implicita nel prezzo", "costosa", f"il prezzo richiede circa {ig:.0%} di crescita annua del FCF per 10 anni"))
+            sig.append(Signal("Crescita implicita nel prezzo", "costosa", f"il prezzo è coerente con circa {ig:.0%} di crescita annua del FCF per 10 anni (stima di modello)"))
         elif gap is not None:
             if gap <= -0.03 and cyclical_peak:
                 sig.append(Signal("Crescita implicita nel prezzo", "ragionevole",
                                   "crescita storica gonfiata dal ciclo: confronto non indicativo", 0.0))
             elif gap <= -0.03:
                 sig.append(Signal("Crescita implicita nel prezzo", "economica",
-                                  f"il prezzo richiede ~{ig:.1%}/anno, meno di quanto fatto storicamente (~{ig - gap:.1%})"))
+                                  f"il prezzo è coerente con ~{ig:.1%}/anno, meno di quanto fatto storicamente (~{ig - gap:.1%})"))
             elif gap >= 0.03:
                 sig.append(Signal("Crescita implicita nel prezzo", "costosa",
-                                  f"il prezzo richiede ~{ig:.1%}/anno, più della crescita storica (~{ig - gap:.1%})"))
+                                  f"il prezzo è coerente con ~{ig:.1%}/anno, più della crescita storica (~{ig - gap:.1%})"))
             else:
                 sig.append(Signal("Crescita implicita nel prezzo", "ragionevole", f"crescita implicita ~{ig:.1%}, simile alla storica"))
     ey = _num(row, "earnings_yield_after_tax") if not row.get("is_banklike") else _num(row, "earnings_yield_equity")

@@ -17,7 +17,7 @@ STRENGTH_TEMPLATES = {
     "roic_5y_median": "Rende molto sul capitale investito: ROIC mediano {v} negli ultimi 5 anni",
     "roic": "Ritorno sul capitale investito elevato ({v} nell'ultimo anno)",
     "gross_margin": "Margine lordo alto ({v}): indizio di potere di prezzo o prodotto differenziato",
-    "op_margin_volatility": "Margini molto stabili nel tempo: business prevedibile",
+    "op_margin_volatility": "Margini molto stabili nel tempo: risultati storicamente prevedibili",
     "fcf_conversion": "Gli utili si trasformano in cassa (conversione {v})",
     "pct_years_fcf_positive": "Genera cassa libera con costanza ({v} degli anni)",
     "pct_years_profitable": "In utile con continuità ({v} degli anni)",
@@ -28,12 +28,12 @@ STRENGTH_TEMPLATES = {
     "revenue_growth_consistency": "Crescita regolare: ricavi in aumento nel {v} degli anni",
     "net_debt_ebitda": "Debito contenuto (debito netto/EBITDA {v})",
     "interest_coverage": "Interessi ampiamente coperti dagli utili ({v})",
-    "piotroski_f": "Bilancio in miglioramento (Piotroski {v})",
+    "piotroski_f": "Indicatori di bilancio in miglioramento (Piotroski {v})",
     "earnings_yield": "Prezzo basso rispetto agli utili operativi (rendimento {v})",
     "fcf_sbc_yield": "Prezzo basso rispetto alla cassa generata (FCF yield netto stock option {v})",
     "pe_vs_history_pct": "P/E basso rispetto alla propria storia (percentile {v})",
-    "growth_gap": "Il prezzo sconta meno crescita di quella storica ({v})",
-    "share_change_cagr_5y": "Riduce il numero di azioni ({v} l'anno): ogni azione vale una fetta più grande",
+    "growth_gap": "Il prezzo sembra scontare meno crescita di quella storica ({v}, stima di modello)",
+    "share_change_cagr_5y": "Riduce il numero di azioni ({v} l'anno): ogni azione rappresenta una quota più grande dell'azienda",
     "shareholder_yield": "Restituisce molto agli azionisti ({v} l'anno tra dividendi e riacquisti)",
     "roe_5y_median": "ROE mediano {v} (5 anni), elevato per il settore",
     "roa_5y_median": "ROA mediano {v}, elevato per una banca/assicurazione",
@@ -57,7 +57,7 @@ WEAKNESS_TEMPLATES = {
     "fcf_sbc_yield": "Costosa rispetto alla cassa generata (FCF yield netto stock option {v})",
     "ev_sales": "Multiplo sui ricavi alto ({v})",
     "pe_vs_history_pct": "P/E alto rispetto alla propria storia (percentile {v})",
-    "growth_gap": "Il prezzo richiede più crescita di quella storica ({v})",
+    "growth_gap": "Il prezzo sembra scontare più crescita di quella storica ({v}, stima di modello)",
     "share_change_cagr_5y": "Diluizione: azioni in aumento del {v} l'anno",
     "sbc_to_revenue": "Compensi in azioni elevati ({v} dei ricavi)",
     "acquisitions_to_fcf_5y": "Crescita molto dipendente da acquisizioni ({v} del FCF)",
@@ -74,13 +74,13 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
         p = info["percentile"]
         v = metrics.get(key)
         if p >= 80 and key in STRENGTH_TEMPLATES and len(strengths) < 5:
-            strengths.append({"text": STRENGTH_TEMPLATES[key].format(v=fmt(key, v)) + f" — meglio del {p:.0f}% dei pari.",
+            strengths.append({"text": STRENGTH_TEMPLATES[key].format(v=fmt(key, v)) + f" — percentile {p:.0f} tra i pari (50 = mediana).",
                               "metric": key, "percentile": p})
     for key, info in sorted(pcts.items(), key=lambda kv: kv[1]["percentile"]):
         p = info["percentile"]
         v = metrics.get(key)
         if p <= 20 and key in WEAKNESS_TEMPLATES and len(weaknesses) < 5:
-            weaknesses.append({"text": WEAKNESS_TEMPLATES[key].format(v=fmt(key, v)) + f" — peggio del {100 - p:.0f}% dei pari.",
+            weaknesses.append({"text": WEAKNESS_TEMPLATES[key].format(v=fmt(key, v)) + f" — percentile {p:.0f} tra i pari (50 = mediana).",
                                "metric": key, "percentile": p})
     risk_flags = [f for f in flags if f.get("severity") in ("severe", "high", "medium")]
     for f in sorted(risk_flags, key=lambda f: {"severe": 0, "high": 1, "medium": 2}[f["severity"]])[:6]:
@@ -106,16 +106,17 @@ def build_thesis(row: pd.Series, detail: dict[str, Any], metrics: dict[str, Any]
             if metrics.get(k) is not None:
                 hist = (k, metrics[k])
                 break
-        txt = (f"Al prezzo attuale il mercato si aspetta che il free cash flow cresca circa del {ig:.1%} l'anno per "
-               f"{rdcf.get('years', 10)} anni (tasso di sconto {rdcf.get('discount_rate', 0):.1%}, "
-               f"crescita perpetua {rdcf.get('terminal_growth', 0):.1%}).")
+        txt = (f"Con le ipotesi del modello (tasso di sconto {rdcf.get('discount_rate', 0):.1%}, crescita perpetua "
+               f"{rdcf.get('terminal_growth', 0):.1%}) il prezzo attuale è coerente con una crescita del free cash flow "
+               f"di circa il {ig:.1%} l'anno per {rdcf.get('years', 10)} anni. È una stima: cambia molto con le ipotesi.")
         if hist:
             txt += f" Storicamente: {label(hist[0]).lower()} {fmt(hist[0], hist[1])}."
         paying.append(txt)
-        must.append(f"Il free cash flow deve crescere almeno del {max(ig, 0):.1%} l'anno in media per giustificare il prezzo.")
+        must.append(f"Con le ipotesi del modello, il prezzo attuale presuppone una crescita media del free cash flow di "
+                    f"circa il {max(ig, 0):.1%} l'anno: una crescita inferiore renderebbe il prezzo meno giustificato.")
     om = metrics.get("op_margin_5y_median")
     if om is not None and not row.get("is_banklike"):
-        must.append(f"I margini devono restare vicini ai livelli storici (margine operativo mediano {om:.1%}).")
+        must.append(f"La tesi presuppone margini vicini ai livelli storici (margine operativo mediano {om:.1%}).")
 
     monitor = []
     if om is not None and not row.get("is_banklike"):

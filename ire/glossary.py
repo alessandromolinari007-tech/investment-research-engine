@@ -76,7 +76,7 @@ GLOSSARY: dict[str, tuple[str, str, str]] = {
     "capex_to_revenue": ("Capex / ricavi (intensità di capitale)", "pct", "Quanto deve reinvestire per mantenersi e crescere."),
     "capex_to_da": ("Capex / ammortamenti", "x", ""),
     "implied_fcf_growth": ("Crescita implicita nel prezzo", "pct", "Crescita annua del FCF per 10 anni che giustificherebbe il prezzo attuale (reverse DCF)."),
-    "growth_gap": ("Implicita − storica", "pctpt", "Negativo = il mercato si aspetta meno di quanto l'azienda ha già fatto."),
+    "growth_gap": ("Implicita − storica", "pctpt", "Negativo = il prezzo sembra scontare meno crescita di quella già realizzata (stima di modello)."),
     "pe_hist_median": ("P/E mediano storico", "x", ""),
     "pe_vs_history_pct": ("P/E vs propria storia", "ratio01", "0% = mai stato così basso, 100% = mai così alto."),
     "ev_ebit_vs_history_pct": ("EV/EBIT vs propria storia", "ratio01", ""),

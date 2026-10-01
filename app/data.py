@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -11,7 +13,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ire.db import init_db  # noqa: E402
+from ire.config import load_config  # noqa: E402
+from ire.db import connect, init_db  # noqa: E402
 from ire.sources.yahoo import normalize_currency  # noqa: E402
 
 KEY_METRICS = [
@@ -24,9 +27,23 @@ KEY_METRICS = [
 ]
 
 
+_LOCAL = threading.local()
+
+
 @st.cache_resource
+def _schema_ready(path: str) -> bool:
+    init_db(Path(path)).close()          # create / upgrade the schema once per process and database
+    return True
+
+
 def con():
-    return init_db()
+    """One SQLite connection per thread: Streamlit runs every browser session in its own thread, and a
+    single connection shared between sessions can interleave transactions."""
+    path = load_config().db_path
+    _schema_ready(str(path))
+    if getattr(_LOCAL, "path", None) != path:
+        _LOCAL.con, _LOCAL.path = connect(path), path
+    return _LOCAL.con
 
 
 def q(sql: str, params: list | tuple = ()) -> pd.DataFrame:
@@ -60,6 +77,10 @@ def universe(run_id: int) -> pd.DataFrame:
     for k in KEY_METRICS:          # a metric missing for every company must still exist as an empty column
         if k not in s.columns:
             s[k] = float("nan")
+    fx = fx_table()
+    s["market_cap_eur"] = [fx.convert(float(mc), cur or "USD", "EUR") if pd.notna(mc) else None
+                           for mc, cur in zip(s["market_cap"], s["fin_currency"])]
+    s["market_cap_eur"] = pd.to_numeric(s["market_cap_eur"], errors="coerce")
     s["label"] = s["ticker"] + " — " + s["name"].fillna("")
     return s
 
@@ -108,6 +129,13 @@ def fx_table():
 def portfolio(run_id: int) -> dict[str, Any]:
     r = q("SELECT payload FROM portfolios WHERE run_id=? AND name='proposto'", [run_id])
     return json.loads(r["payload"].iloc[0]) if len(r) else {}
+
+
+@st.cache_data(ttl=300)
+def changes(new_run: int, old_run: int) -> pd.DataFrame:
+    from ire.changes import compute_changes
+
+    return compute_changes(con(), new_run, old_run)
 
 
 def all_companies() -> pd.DataFrame:

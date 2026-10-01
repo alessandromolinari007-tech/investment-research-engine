@@ -37,6 +37,8 @@ full = 300_000_000
 fundamentals_ttl_days = 7
 # Ore prima di riscaricare i prezzi
 prices_ttl_hours = 20
+# Giorni prima di riscaricare TUTTO lo storico prezzi (Yahoo ricalcola lo storico dopo split e dividendi)
+prices_full_ttl_days = 7
 # Giorni prima di riscaricare elenco filing / testo dei 10-K
 filings_ttl_days = 7
 

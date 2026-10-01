@@ -136,7 +136,7 @@ def analyze_company(company: dict[str, Any], fin: Financials, info: dict[str, An
         if rd.implied_g is not None and hist_g is not None:
             m.add("growth_gap", rd.implied_g - hist_g, "estimate", "",
                   "crescita implicita nel prezzo − crescita storica 5 anni (FCF totale o ricavi). "
-                  "Negativo = il mercato si aspetta meno di quanto l'azienda ha fatto finora",
+                  "Negativo = il prezzo sembra scontare meno crescita di quella già realizzata (stima di modello)",
                   implied=rd.implied_g, historical=hist_g)
 
     # --------------------------------------------------------------- valuation vs own history

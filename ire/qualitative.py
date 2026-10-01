@@ -27,6 +27,15 @@ ITEM_FLAGS = {
 }
 
 
+# flags produced by analyze_annual_reports (only for companies that got the "deep" filing analysis)
+TEXT_FLAG_CODES = {"GOING_CONCERN_TEXT", "MATERIAL_WEAKNESS", "RESTATEMENT_TEXT", "AUDITOR_CHANGE_TEXT", "IMPAIRMENT_TEXT",
+                   "CUSTOMER_CONCENTRATION", "SOLE_SOURCE_SUPPLIERS", "RISK_FACTORS_CHANGED"}
+
+
+def is_text_flag(code: str) -> bool:
+    return code in TEXT_FLAG_CODES or code.startswith("GEO_EXPOSURE_")
+
+
 def filings_flags(company_id: str, cik: str, sub: dict[str, Any], months: int = 24) -> tuple[list[dict], list[dict]]:
     """Returns (filings rows for DB, flags)."""
     rows, flags = [], []

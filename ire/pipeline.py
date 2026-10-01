@@ -22,12 +22,12 @@ import pandas as pd
 from . import classify, qualitative, scoring
 from .analysis import analyze_company
 from .config import load_config
-from .db import init_db, latest_run_id, log, now_iso, upsert, upsert_merge
-from .http import SourceUnavailable, get_client
+from .db import init_db, log, now_iso, upsert, upsert_merge
+from .http import SourceUnavailable
 from .normalize.model import Financials
 from .normalize.sec_facts import normalize_companyfacts
 from .normalize.yahoo_facts import normalize_yahoo
-from .portfolio import analyze_portfolio, construct_portfolio
+from .portfolio import analyze_portfolio, construct_portfolio, serializable
 from .prices import PriceStore, main_unit
 from .risk import BENCHMARKS, weekly_returns
 from .sources import sec, yahoo
@@ -179,7 +179,7 @@ class Pipeline:
     def stage_prices(self) -> None:
         self.say(f"3/9 Storico prezzi (10+ anni) per {len(self.universe)} titoli + benchmark…", stage="prices")
         tickers = [c.ticker for c in self.universe] + [b for b, _ in BENCHMARKS]
-        self.prices.get_full(tickers)
+        self.prices.get_full(tickers, read=False)
         # benchmark in EUR
         self.bench_eur, self.bench_name = None, None
         for t, name in BENCHMARKS:
@@ -631,7 +631,7 @@ class Pipeline:
             meta = sc[["company_id", "sector", "region", "price_currency", "quality", "valuation", "growth",
                        "financial_strength", "momentum_pct", "market_cap_eur"]]
             an = analyze_portfolio(w, weekly, meta, bench_w)
-            port["analytics"] = _serializable(an)
+            port["analytics"] = serializable(an)
         port["benchmark"] = self.bench_name
         port["method"] = ("Selezione greedy con penalità di correlazione e vincoli di settore/area; pesi 50% uguali + 50% "
                           "inversi alla volatilità, inclinati del ±30% in base al punteggio, poi i pesi più vicini che "
@@ -646,10 +646,11 @@ class Pipeline:
 
     # ------------------------------------------------------------------ diff
     def stage_diff(self) -> None:
-        prev = self.con.execute("SELECT run_id FROM runs WHERE status='completed' AND run_id < ? ORDER BY run_id DESC LIMIT 1",
-                                (self.run_id,)).fetchone()
+        # compare with the previous completed run of the SAME mode (different modes = different universes)
+        prev = self.con.execute("SELECT run_id FROM runs WHERE status='completed' AND mode=? AND run_id < ? "
+                                "ORDER BY run_id DESC LIMIT 1", (self.mode, self.run_id)).fetchone()
         if not prev:
-            self.stats["diff"] = {"note": "prima analisi: nessun confronto disponibile"}
+            self.stats["diff"] = {"note": f"prima analisi in modalità {self.mode}: nessun confronto disponibile"}
             return
         from .changes import compute_changes
 
@@ -684,15 +685,3 @@ def _json_default(o):
     if isinstance(o, float) and math.isnan(o):
         return None
     return str(o)
-
-
-def _serializable(an: dict[str, Any]) -> dict[str, Any]:
-    out = {}
-    for k, v in an.items():
-        if isinstance(v, pd.DataFrame):
-            out[k] = {"index": list(v.index), "columns": list(v.columns), "values": np.round(v.values.astype(float), 4).tolist()}
-        elif isinstance(v, pd.Series):
-            out[k] = {"index": [str(i.date()) if hasattr(i, "date") else str(i) for i in v.index], "values": [float(x) for x in v.values]}
-        else:
-            out[k] = v
-    return out

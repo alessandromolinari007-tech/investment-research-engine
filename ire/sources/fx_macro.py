@@ -62,29 +62,49 @@ def fred_series(series: str) -> pd.DataFrame:
     return df
 
 
+MAX_FX_GAP_DAYS = 10    # a rate older than this (vs the date asked, or vs the newest rate in the table) is not used
+
+
 class FxTable:
-    """In-memory FX lookup built from the DB `fx` table."""
+    """In-memory FX lookup built from the DB `fx` table.
+
+    Rates are NOT forward-filled indefinitely: a currency that stopped being published (e.g. RUB by the
+    ECB in 2022) must not look "fresh". Every lookup accepts only a real observation at most
+    `MAX_FX_GAP_DAYS` before the date asked; with no date, the currency's last observation must be within
+    `MAX_FX_GAP_DAYS` of the newest observation in the whole table."""
 
     def __init__(self, df: pd.DataFrame):
-        # wide: index date, columns currency, values per_eur
+        # wide: index date, columns currency, values per_eur (real observations only, NaN elsewhere)
         if df.empty:
             self.wide = pd.DataFrame()
+            self.latest = None
         else:
             w = df.pivot_table(index="date", columns="currency", values="per_eur", aggfunc="last")
             w.index = pd.to_datetime(w.index)
             w = w.sort_index()
             w["EUR"] = 1.0
-            self.wide = w.ffill()
+            self.wide = w
+            self.latest = w.index.max()
         self.sources = {}
         if not df.empty and "source" in df.columns:
             self.sources = df.groupby("currency")["source"].last().to_dict()
         self.sources["EUR"] = "identity"
 
+    def last_observation(self, cur: str) -> pd.Timestamp | None:
+        if self.wide.empty or cur not in self.wide.columns:
+            return None
+        s = self.wide[cur].dropna()
+        return None if s.empty else s.index[-1]
+
     def has(self, cur: str) -> bool:
-        return cur == "EUR" or (not self.wide.empty and cur in self.wide.columns)
+        """True if the currency has a CURRENT rate (published within MAX_FX_GAP_DAYS of the newest rate)."""
+        if cur == "EUR":
+            return True
+        last = self.last_observation(cur)
+        return last is not None and (self.latest - last).days <= MAX_FX_GAP_DAYS
 
     def rate(self, cur: str, on: date | str | pd.Timestamp | None = None) -> float | None:
-        """Units of `cur` per 1 EUR on (or before) date. None if unknown."""
+        """Units of `cur` per 1 EUR on (or shortly before) the date; None if unknown or stale."""
         if cur == "EUR":
             return 1.0
         if self.wide.empty or cur not in self.wide.columns:
@@ -92,14 +112,9 @@ class FxTable:
         s = self.wide[cur].dropna()
         if s.empty:
             return None
-        if on is None:
-            return float(s.iloc[-1])
-        ts = pd.Timestamp(on)
+        ts = self.latest if on is None else pd.Timestamp(on)
         s2 = s.loc[:ts]
-        if s2.empty:
-            return None
-        # stale guard: don't use a rate more than 10 days old for a given date
-        if (ts - s2.index[-1]).days > 10:
+        if s2.empty or (ts - s2.index[-1]).days > MAX_FX_GAP_DAYS:
             return None
         return float(s2.iloc[-1])
 
@@ -115,11 +130,17 @@ class FxTable:
         return float(amount) / a * b
 
     def series_to_eur(self, prices: pd.Series, cur: str) -> pd.Series | None:
-        """Convert a daily price series in `cur` to EUR using same-day (ffilled) rates."""
+        """Convert a daily price series in `cur` to EUR with the latest rate at most MAX_FX_GAP_DAYS old
+        (NaN where no such rate exists, e.g. after the currency stopped being published)."""
         if cur == "EUR":
             return prices
         if self.wide.empty or cur not in self.wide.columns:
             return None
-        r = self.wide[cur].reindex(prices.index.union(self.wide.index)).ffill().reindex(prices.index)
-        out = prices / r
-        return out
+        s = self.wide[cur].dropna()
+        if s.empty or prices.empty:
+            return None
+        left = pd.DataFrame({"date": pd.DatetimeIndex(prices.index).astype("datetime64[ns]")})
+        right = pd.DataFrame({"date": s.index.astype("datetime64[ns]"), "rate": s.to_numpy(dtype=float)})
+        m = pd.merge_asof(left.reset_index().sort_values("date"), right, on="date",
+                          tolerance=pd.Timedelta(days=MAX_FX_GAP_DAYS)).sort_values("index")
+        return pd.Series(prices.to_numpy(dtype=float) / m["rate"].to_numpy(), index=prices.index, name=prices.name)

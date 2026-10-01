@@ -39,6 +39,38 @@ DIRECTION.update({"fcf_margin": 1, "operating_margin": 1, "net_margin": 1, "roe"
                   "beta_world": -1, "pb": -1})
 
 RUN = data.latest_run()
+STATUS_IT = {"completed": "completata", "failed": "fallita", "interrupted": "interrotta", "running": "in corso"}
+
+
+def esc(text) -> str:
+    """Streamlit markdown reads `$…$` as LaTeX: escape dollars in texts coming from data."""
+    return str(text if text is not None else "").replace("$", "\\$")
+
+
+def run_banner():
+    """Make failed / interrupted runs visible instead of silently showing an older analysis."""
+    r = data.runs()
+    if r.empty:
+        return
+    last = r.iloc[0]
+    if last["status"] == "completed":
+        return
+    when = str(last["started_at"] or "")[:16].replace("T", " ")
+    msg = f"L'ultima analisi (#{last['run_id']} del {when} UTC) risulta **{STATUS_IT.get(last['status'], last['status'])}**."
+    try:
+        err = json.loads(last["summary"] or "{}").get("error")
+    except ValueError:
+        err = None
+    if err:
+        msg += f" Motivo: {esc(str(err)[:300])}"
+    if RUN is not None:
+        msg += f" Qui vedi l'ultima analisi completata (#{RUN})."
+    msg += " Il log completo è nella pagina *Dati e metodologia*."
+    (st.info if last["status"] == "running" else st.warning)(msg)
+
+
+def clamp(v, lo, hi) -> float:
+    return float(min(max(float(v), lo), hi))
 
 
 def sector_it(s):
@@ -56,6 +88,7 @@ def tkey(name: str) -> str:
 
 
 def no_data():
+    run_banner()
     st.warning("Nessuna analisi completata trovata. Esegui prima la pipeline: **run_pipeline.bat** "
                "(oppure `python -m ire run --mode quick` per un primo test).")
     st.stop()
@@ -70,7 +103,8 @@ def metric_table(mdf: pd.DataFrame, keys: list[str], currency: str | None, pcts:
         p = (pcts or {}).get(k, {}).get("percentile")
         rows.append({"Metrica": label(k), "Valore": fmt(k, r["value"], currency),
                      "Percentile nel settore": p if p is not None else None,
-                     "Tipo": KIND_IT.get(r["kind"], r["kind"]), "Periodo": r["period"], "Come si calcola": r["method"]})
+                     "Cosa significa": explain(k) or "", "Tipo": KIND_IT.get(r["kind"], r["kind"]),
+                     "Periodo": r["period"], "Come si calcola": r["method"]})
     return pd.DataFrame(rows)
 
 
@@ -82,7 +116,7 @@ def page_home():
     U = data.universe(RUN)
     r = data.runs()
     run = r[r.run_id == RUN].iloc[0]
-    summary = json.loads(run["summary"] or "{}")
+    run_banner()
     st.caption(f"Analisi #{RUN} del {str(run['finished_at'])[:16].replace('T', ' ')} UTC · modalità {run['mode']} · "
                "Strumento di ricerca personale: non è un consiglio di investimento.")
     scored = U[U["robust_score"].notna()]
@@ -132,7 +166,7 @@ def page_home():
          "💎 Qualità a sconto vs pari", "Alta qualità, prezzo basso rispetto ai pari, nessun segno di deterioramento. Il punto di partenza per la ricerca.")
     show(top[top.classification == C_QFAIR].head(15),
          "✅ Qualità a prezzo ragionevole", "Aziende eccellenti valutate nella media del settore.")
-    big = top.sort_values("market_cap", ascending=False) if "market_cap" in top.columns else top
+    big = top.sort_values("market_cap_eur", ascending=False, na_position="last")
     show(big[big.classification.isin(NEGATIVE_CLASSES)].head(15),
          "🚩 Da maneggiare con cura (grandi società)", "Red flag gravi o apparente economicità con fondamentali in peggioramento.")
     st.divider()
@@ -181,12 +215,17 @@ def page_company():
         cls = sc.get("classification") or C_NODATA
         st.markdown(f"### {CLASS_ICON.get(cls, '')} {cls}")
         th = det.get("thesis") or {}
-        st.write(th.get("headline", "").split(" — ", 1)[-1])
+        st.markdown(esc(th.get("headline", "").split(" — ", 1)[-1]))
         verdict = sc.get("valuation_verdict") or "non determinabile"
-        st.markdown(f"**Valutazione:** {VERDICT_ICON.get(verdict, '')} {verdict} · confidenza **{sc.get('valuation_confidence')}**")
+        st.markdown(f"**Valutazione:** {VERDICT_ICON.get(verdict, '')} {verdict} · confidenza "
+                    f"**{sc.get('valuation_confidence') or 'n/d'}**")
         for s in det.get("signals", []):
-            icon = {"economica": "🟢", "ragionevole": "⚪", "costosa": "🔴"}[s["verdict"]]
-            st.markdown(f"- {icon} *{s['name']}*: {s['detail']}")
+            icon = {"economica": "🟢", "ragionevole": "⚪", "costosa": "🔴"}.get(s["verdict"], "")
+            st.markdown(f"- {icon} *{s['name']}*: {esc(s['detail'])}")
+        vp = det.get("valuation_peers")
+        if vp is not None:
+            st.caption(f"Economicità rispetto ai pari considerando SOLO i multipli: {vp:.0f}/100 "
+                       "(il punteggio 'Valutazione' include anche storia e crescita implicita).")
     with k2:
         if th.get("pillars"):
             st.plotly_chart(charts.pillar_bars(th["pillars"]), width="stretch", config={"displayModeBar": False})
@@ -198,22 +237,22 @@ def page_company():
     with t1:
         st.markdown("**Punti di forza**")
         for s in th.get("strengths", []) or [{"text": "Nessun punto di forza marcato rispetto ai pari."}]:
-            st.markdown(f"- ✅ {s['text']}")
+            st.markdown(f"- ✅ {esc(s['text'])}")
         st.markdown("**Cosa stai pagando**")
         for s in th.get("paying", []):
-            st.markdown(f"- 💶 {s}")
+            st.markdown(f"- 💶 {esc(s)}")
     with t2:
         st.markdown("**Rischi e punti deboli**")
         for s in th.get("weaknesses", []) or [{"text": "Nessuna debolezza marcata rispetto ai pari."}]:
             icon = SEV_ICON.get(s.get("severity"), "⚠️")
-            st.markdown(f"- {icon} {s['text']}")
+            st.markdown(f"- {icon} {esc(s['text'])}")
         st.markdown("**Cosa deve andare bene**")
         for s in th.get("must_go_right", []):
-            st.markdown(f"- 🎯 {s}")
+            st.markdown(f"- 🎯 {esc(s)}")
         st.markdown("**Cosa invaliderebbe la tesi (da monitorare)**")
         for s in th.get("monitor", []):
-            st.markdown(f"- 👁️ {s}")
-    st.caption(th.get("disclaimer", ""))
+            st.markdown(f"- 👁️ {esc(s)}")
+    st.caption(esc(th.get("disclaimer", "")))
     wl = data.watchlist()
     if c.get("ticker") in wl:
         if st.button("★ Rimuovi dalla watchlist"):
@@ -282,26 +321,19 @@ def page_company():
         rd = d["market_extra"].get("rdcf")
         st.markdown("#### 🔄 Reverse DCF interattivo — *quanta crescita sta pagando il prezzo?*")
         if rd and rd.get("fcf_base") and mv("market_cap"):
-            from ire.valuation import dcf_value, implied_growth
-
             r1, r2, r3 = st.columns(3)
-            dr = r1.slider("Tasso di sconto (rendimento richiesto)", 0.04, 0.16, float(round(rd["discount_rate"], 3)), 0.0025, format="%.2f")
-            gt = r2.slider("Crescita perpetua dopo l'orizzonte", 0.0, 0.04, float(rd["terminal_growth"]), 0.0025, format="%.3f")
-            yrs = r3.slider("Anni di crescita esplicita", 5, 15, int(rd["years"]))
-            g, status = implied_growth(mv("market_cap"), rd["fcf_base"], dr, gt, yrs)
-            st.metric("Crescita annua del FCF implicita nel prezzo", f"{g:.1%}" if g is not None else "n/d", help=status)
-            hist = [(label(k), mv(k)) for k in ("fcf_ps_cagr_5y", "revenue_cagr_5y", "revenue_cagr_10y") if mv(k) is not None]
-            if hist:
-                st.caption("Per confronto — " + " · ".join(f"{n}: {v:.1%}" for n, v in hist))
-            ug = st.slider("Scenario: la tua ipotesi di crescita annua del FCF", -0.10, 0.30, float(round(g or 0.05, 2)), 0.01, format="%.2f")
-            val = dcf_value(rd["fcf_base"], ug, dr, gt, yrs)
-            st.write(f"Con crescita {ug:.0%} per {yrs} anni il valore stimato è **{money(val, cur)}** contro una capitalizzazione di "
-                     f"**{money(mv('market_cap'), cur)}** (**{val / mv('market_cap') - 1:+.0%}**).")
-            st.caption(f"FCF di partenza: {money(rd['fcf_base'], cur)} ({rd['fcf_base_method']}). Tasso risk-free: {rd['risk_free']:.2%} "
-                       f"({rd['risk_free_source']}) + premio al rischio {rd['erp']:.1%} (assunzione). È un modello: piccole variazioni "
-                       "delle ipotesi cambiano molto il risultato. Usalo per capire le aspettative, non come prezzo obiettivo.")
+            dr = r1.slider("Tasso di sconto (rendimento richiesto)", 0.04, 0.16,
+                           clamp(round(rd["discount_rate"] / 0.0025) * 0.0025, 0.04, 0.16), 0.0025, format="%.4f")
+            gt = r2.slider("Crescita perpetua dopo l'orizzonte", 0.0, 0.04,
+                           clamp(round(rd["terminal_growth"] / 0.0025) * 0.0025, 0.0, 0.04), 0.0025, format="%.4f")
+            yrs = r3.slider("Anni di crescita esplicita", 5, 15, int(clamp(rd["years"], 5, 15)))
+            if dr <= gt + 0.005:
+                st.warning("Il tasso di sconto deve superare la crescita perpetua di almeno 0,5 punti: con valori così "
+                           "vicini il valore terminale tende all'infinito e il modello non ha senso.")
+            else:
+                _dcf_scenario(rd, mv, cur, dr, gt, yrs)
         else:
-            st.info("Reverse DCF non applicabile: " + (rd.get("status") if rd else
+            st.info("Reverse DCF non applicabile: " + ((rd.get("status") or "dati insufficienti") if rd else
                     "banca/assicurazione o free cash flow non positivo/stabile (il DCF sui flussi di cassa non è significativo)."))
 
     with tabs[2]:
@@ -330,23 +362,28 @@ def page_company():
 
     with tabs[3]:
         fl = d["flags"]
+        qd = d["qualitative"]
+        deep = bool(det.get("deep_analysis")) or bool(qd.get("performed") and qd.get("run_id") == RUN)
+        if not deep:
+            st.info("L'analisi del testo dei report annuali NON è stata eseguita per questa società in questa analisi "
+                    "(non registrata alla SEC, oppure fuori dalla lista approfondita): le segnalazioni qui sotto vengono "
+                    "solo dai numeri di bilancio e dagli eventi SEC.")
         if fl.empty:
-            st.success("Nessuna segnalazione.")
+            st.success("Nessuna segnalazione." if deep else "Nessuna segnalazione dai numeri di bilancio e dagli eventi SEC.")
         else:
             order = {"severe": 0, "high": 1, "medium": 2, "info": 3, "data": 4}
             fl = fl.sort_values(by="severity", key=lambda s: s.map(order))
             for _, f in fl.iterrows():
                 ev = json.loads(f["evidence"]) if f["evidence"] and f["evidence"] != "null" else None
-                line = f"{SEV_ICON.get(f['severity'], '')} **{SEV_IT.get(f['severity'], f['severity'])}** — {f['message']}"
+                line = f"{SEV_ICON.get(f['severity'], '')} **{SEV_IT.get(f['severity'], f['severity'])}** — {esc(f['message'])}"
                 if f.get("source"):
                     line += f"  \n<small>Fonte: {f['source']}</small>"
                 st.markdown(line, unsafe_allow_html=True)
                 if isinstance(ev, dict):
                     if ev.get("snippet"):
-                        st.caption(f"«…{ev['snippet']}…»")
+                        st.caption(esc(f"«…{ev['snippet']}…»"))
                     if ev.get("url"):
                         st.markdown(f"<small>[Apri il documento]({ev['url']})</small>", unsafe_allow_html=True)
-        qd = d["qualitative"]
         if qd:
             st.markdown("#### Report annuali analizzati")
             for f in qd.get("filings", []):
@@ -356,9 +393,9 @@ def page_company():
                 st.markdown(f"**Fattori di rischio: {rdiff['new_count']} frasi nuove e {rdiff['removed_count']} rimosse** rispetto al "
                             f"report precedente ({rdiff['new_share']:.0%} del testo è nuovo). Le più lunghe tra le nuove:")
                 for sentence in rdiff.get("new_examples", [])[:6]:
-                    st.caption(f"➕ {sentence}")
+                    st.caption(esc(f"➕ {sentence}"))
             for n in qd.get("notes", []):
-                st.caption(f"ℹ️ {n}")
+                st.caption(esc(f"ℹ️ {n}"))
         fg = d["filings"]
         if not fg.empty:
             st.markdown("#### Filing recenti (SEC EDGAR)")
@@ -378,8 +415,8 @@ def page_company():
         st.markdown("**Come sono stati ottenuti i dati**")
         me = d["market_extra"]
         for n in me.get("notes", []):
-            st.markdown(f"- {n}")
-        st.markdown(f"- Capitalizzazione: {me.get('market_cap_method', 'n/d')}" + (f" · {me['fx_note']}" if me.get("fx_note") else ""))
+            st.markdown(f"- {esc(n)}")
+        st.markdown(esc(f"- Capitalizzazione: {me.get('market_cap_method', 'n/d')}" + (f" · {me['fx_note']}" if me.get("fx_note") else "")))
         if me.get("adr_ratio"):
             st.markdown(f"- ADR: rapporto azioni ordinarie/ADR stimato = {me['adr_ratio']:.3g} (da filing SEC vs azioni Yahoo)")
         cf = d["conflicts"]
@@ -403,6 +440,26 @@ def page_company():
                                         "original_value": st.column_config.NumberColumn("Valore originale", format="%.4g")})
             st.caption("*restated=1*: il valore è stato modificato in un filing successivo (si usa l'ultimo; l'originale è mostrato). "
                        "*split_adjusted=1*: rettificato per frazionamento azionario.")
+
+
+def _dcf_scenario(rd: dict, mv, cur: str | None, dr: float, gt: float, yrs: int) -> None:
+    from ire.valuation import dcf_value, implied_growth
+
+    g, status = implied_growth(mv("market_cap"), rd["fcf_base"], dr, gt, yrs)
+    st.metric("Crescita annua del FCF implicita nel prezzo", f"{g:.1%}" if g is not None else "n/d", help=status)
+    hist = [(label(k), mv(k)) for k in ("fcf_ps_cagr_5y", "revenue_cagr_5y", "revenue_cagr_10y") if mv(k) is not None]
+    if hist:
+        st.caption("Per confronto — " + " · ".join(f"{n}: {v:.1%}" for n, v in hist))
+    ug = st.slider("Scenario: la tua ipotesi di crescita annua del FCF", -0.10, 0.30,
+                   clamp(round(g if g is not None else 0.05, 2), -0.10, 0.30), 0.01, format="%.2f")
+    val = dcf_value(rd["fcf_base"], ug, dr, gt, yrs)
+    if val is not None and np.isfinite(val):
+        st.markdown(esc(f"Con crescita {ug:.0%} per {yrs} anni il valore stimato è **{money(val, cur)}** contro una "
+                        f"capitalizzazione di **{money(mv('market_cap'), cur)}** (**{val / mv('market_cap') - 1:+.0%}**)."))
+    st.caption(esc(f"FCF di partenza: {money(rd['fcf_base'], cur)} ({rd['fcf_base_method']}). Tasso risk-free: "
+                   f"{rd['risk_free']:.2%} ({rd['risk_free_source']}) + premio al rischio {rd['erp']:.1%} (assunzione). "
+                   "È un modello: piccole variazioni delle ipotesi cambiano molto il risultato. Usalo per capire "
+                   "le aspettative, non come prezzo obiettivo."))
 
 
 # =====================================================================================
@@ -441,9 +498,12 @@ def page_compare():
     sub = U[U.company_id.isin([lab[p] for p in pick])].set_index("ticker")
     if sub["peer_group"].nunique() > 1:
         st.warning("Stai confrontando aziende di settori diversi: alcune metriche (margini, debito) non sono direttamente confrontabili.")
-    head = sub[["name", "classification", "valuation_verdict", "robust_score", "quality", "growth", "financial_strength", "valuation"]].T
+    head = sub[["name", "classification", "valuation_verdict", "robust_score", "quality", "growth", "financial_strength", "valuation"]].copy()
+    for col in ("robust_score", "quality", "growth", "financial_strength", "valuation"):
+        head[col] = pd.to_numeric(head[col], errors="coerce").map(lambda v: "n/d" if pd.isna(v) else f"{v:.0f}/100")
+    head = head.T.astype(str).replace({"nan": "n/d", "None": "n/d"})
     head.index = ["Nome", "Classificazione", "Valutazione", "Punteggio robusto", "Qualità", "Crescita", "Solidità", "Economicità"]
-    st.dataframe(head.astype(str).replace({"nan": "n/d", "None": "n/d"}), width="stretch")
+    st.dataframe(head, width="stretch")
     for title, keys in COMPARE_GROUPS:
         rows = []
         for k in keys:
@@ -472,7 +532,7 @@ def page_compare():
         if fl.empty:
             col.caption("Nessuna segnalazione rilevante")
         for _, f in fl.iterrows():
-            col.caption(f"{SEV_ICON[f['severity']]} {f['message']}")
+            col.caption(f"{SEV_ICON[f['severity']]} {esc(f['message'])}")
     # history charts
     rev, om = {}, {}
     for t, r in sub.iterrows():
@@ -506,7 +566,7 @@ def page_screener():
     verdicts = g1.multiselect("Valutazione", sorted(U["valuation_verdict"].dropna().unique()))
     conf = g2.multiselect("Confidenza", ["alta", "media", "bassa"])
     tier = g3.multiselect("Qualità dati", ["A", "B"], format_func=lambda x: "A (SEC)" if x == "A" else "B (Yahoo)")
-    min_mc = g4.number_input("Capitalizzazione minima (mld, valuta di bilancio)", 0.0, 5000.0, 0.0, 1.0)
+    min_mc = g4.number_input("Capitalizzazione minima (mld EUR)", 0.0, 5000.0, 0.0, 1.0)
     df = U.copy()
     if regions:
         df = df[df.region.isin(regions)]
@@ -520,8 +580,8 @@ def page_screener():
         df = df[df.confidence.isin(conf)]
     if tier:
         df = df[df.data_tier.isin(tier)]
-    if min_mc and "market_cap" in df:
-        df = df[pd.to_numeric(df.market_cap, errors="coerce") >= min_mc * 1e9]
+    if min_mc:
+        df = df[pd.to_numeric(df.market_cap_eur, errors="coerce") >= min_mc * 1e9]
     df = df.sort_values("robust_score", ascending=False, na_position="last")
     st.caption(f"{len(df)} società. Clicca una riga per aprire la scheda.")
     view = df[["ticker", "name", "sector", "region", "robust_score", "rank_spread", "quality", "growth", "financial_strength",
@@ -543,12 +603,13 @@ def page_screener():
                                      "net_debt_ebitda": st.column_config.NumberColumn("Debito netto/EBITDA", format="%.1f")})
     if ev and ev.selection and ev.selection.rows:
         go_company(df.iloc[ev.selection.rows[0]]["company_id"])
-    st.download_button("⬇️ Scarica CSV", df.drop(columns=["label"], errors="ignore").to_csv(index=False).encode("utf-8"),
+    st.download_button("⬇️ Scarica CSV (per Excel italiano)",
+                       df.drop(columns=["label"], errors="ignore").to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                        "classifica.csv", "text/csv")
 
 
 # =====================================================================================
-def _portfolio_analytics_view(an: dict, tick: dict[str, str]):
+def _portfolio_analytics_view(an: dict, tick: dict[str, str], key: str):
     if not an:
         return
     c = st.columns(5)
@@ -560,28 +621,31 @@ def _portfolio_analytics_view(an: dict, tick: dict[str, str]):
     c[3].metric("Correlazione media", f"{an['avg_pair_correlation']:.2f}" if an.get("avg_pair_correlation") is not None else "n/d")
     c[4].metric("Beta vs MSCI World", f"{an['beta']:.2f}" if an.get("beta") is not None else "n/d")
     for w in an.get("warnings", []):
-        st.warning(w)
+        st.warning(esc(w))
+    if an.get("missing_prices"):
+        st.caption("Senza prezzi utilizzabili (esclusi dall'analisi di rischio): "
+                   + ", ".join(tick.get(k, k) for k in an["missing_prices"]))
     e1, e2, e3 = st.columns(3)
     if an.get("sector_exposure"):
-        e1.plotly_chart(charts.donut_free_bars({sector_it(k): v for k, v in an["sector_exposure"].items()}, "Settori"), width="stretch")
+        e1.plotly_chart(charts.donut_free_bars({sector_it(k): v for k, v in an["sector_exposure"].items()}, "Settori"), width="stretch", key=f"{key}_chart0")
     if an.get("region_exposure"):
-        e2.plotly_chart(charts.donut_free_bars(an["region_exposure"], "Aree geografiche (sede)"), width="stretch")
+        e2.plotly_chart(charts.donut_free_bars(an["region_exposure"], "Aree geografiche (sede)"), width="stretch", key=f"{key}_chart1")
     if an.get("currency_exposure"):
-        e3.plotly_chart(charts.donut_free_bars(an["currency_exposure"], "Valute di quotazione"), width="stretch")
+        e3.plotly_chart(charts.donut_free_bars(an["currency_exposure"], "Valute di quotazione"), width="stretch", key=f"{key}_chart2")
     if an.get("factor_tilts"):
         st.markdown("**Esposizione ai fattori** (media ponderata dei percentili: 50 = neutro)")
-        st.plotly_chart(charts.pillar_bars({k: v for k, v in an["factor_tilts"].items()}), width="stretch")
+        st.plotly_chart(charts.pillar_bars({k: v for k, v in an["factor_tilts"].items()}), width="stretch", key=f"{key}_chart3")
     if an.get("risk_contribution"):
         rc = an["risk_contribution"]
         st.plotly_chart(charts.donut_free_bars({tick.get(k, k): v for k, v in rc.items()}, "Contributo al rischio totale"),
-                        width="stretch")
+                        width="stretch", key=f"{key}_chart5")
     hc = an.get("hist_cum")
     if hc:
         s = {"Portafoglio (pesi attuali)": pd.Series(hc["values"], index=pd.to_datetime(hc["index"]))}
         if an.get("bench_cum"):
             s["MSCI World"] = pd.Series(an["bench_cum"]["values"], index=pd.to_datetime(an["bench_cum"]["index"]))
         st.plotly_chart(charts.lines({k: v * 100 for k, v in s.items()}, "Comportamento storico dei pesi attuali (base 100, EUR)"),
-                        width="stretch")
+                        width="stretch", key=f"{key}_chart6")
         st.caption("⚠️ Non è un backtest della strategia: i titoli sono scelti OGGI con i dati di oggi (look-ahead e survivorship bias). "
                    "Serve a capire come oscillerebbe questo portafoglio, non quanto renderà. "
                    + (f"Rendimento annuo storico {an['hist_return_ann']:.1%} vs benchmark {an.get('bench_return_ann', float('nan')):.1%}; "
@@ -594,7 +658,7 @@ def _portfolio_analytics_view(an: dict, tick: dict[str, str]):
     if cm and cm.get("index"):
         corr = pd.DataFrame(cm["values"], index=cm["index"], columns=cm["columns"])
         labels_ = [tick.get(i, i) for i in corr.index]
-        st.plotly_chart(charts.heatmap(corr, labels_), width="stretch")
+        st.plotly_chart(charts.heatmap(corr, labels_), width="stretch", key=f"{key}_chart4")
 
 
 def page_portfolio():
@@ -607,8 +671,32 @@ def page_portfolio():
     with t1:
         p = data.portfolio(RUN)
         if not p.get("positions"):
-            st.info("Nessun portafoglio proposto nell'ultima analisi." + (" " + " ".join(p.get("log", [])) if p else ""))
+            st.info("Nessun portafoglio proposto nell'ultima analisi." + (" " + esc(" ".join(p.get("log", []))) if p else ""))
         else:
+            if p.get("status") == "non proposto":
+                st.error("**Portafoglio NON proposto**: troppo pochi titoli rispettano i criteri e i vincoli di "
+                         "diversificazione. L'elenco sotto è solo una lista di candidati da studiare.")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Posizioni", len(p["positions"]))
+            m2.metric("Rotazione vs proposta precedente", f"{p['turnover']:.0%}" if p.get("turnover") is not None else "n/d",
+                      help="Quota del capitale da spostare rispetto all'ultima proposta della stessa modalità")
+            m3.metric("Soglia di percentile usata", f"{p.get('min_percentile_used', float('nan')):.0f}"
+                      if p.get("min_percentile_used") is not None else "n/d")
+            if p.get("exited"):
+                st.caption("Usciti rispetto alla proposta precedente: " + ", ".join(tick.get(k, k) for k in p["exited"]))
+            cons = p.get("constraints") or []
+            if cons:
+                cdf = pd.DataFrame(cons)
+                bad = cdf[~cdf["rispettato"].astype(bool)]
+                if len(bad):
+                    st.warning("Vincoli NON rispettati: " + "; ".join(
+                        f"{r.vincolo} {r.effettivo:.1%} (configurato {r.configurato:.1%})" for r in bad.itertuples()))
+                with st.expander("Vincoli di diversificazione: configurati vs effettivi"):
+                    st.dataframe(cdf.assign(rispettato=cdf["rispettato"].map({True: "sì", False: "NO"})),
+                                 hide_index=True, width="stretch",
+                                 column_config={"vincolo": "Vincolo", "rispettato": "Rispettato", "dettaglio": "Dettaglio",
+                                                "configurato": st.column_config.NumberColumn("Configurato", format="percent"),
+                                                "effettivo": st.column_config.NumberColumn("Effettivo", format="percent")})
             st.caption("Proposta generata dalla metodologia: " + p.get("method", "") +
                        " È un punto di partenza per la tua ricerca, non una raccomandazione personalizzata.")
             pos = pd.DataFrame(p["positions"])
@@ -627,13 +715,13 @@ def page_portfolio():
                 for role, why in pos.groupby("role")["role_reason"].first().items():
                     st.markdown(f"- **{role}**: {why}")
             with st.expander("Come è stata costruita la selezione"):
-                for l in p.get("log", []):
-                    st.markdown(f"- {l}")
+                for line in p.get("log", []):
+                    st.markdown(f"- {esc(line)}")
                 rej = p.get("rejected_examples", {})
                 if rej:
                     st.markdown("Esempi di candidati esclusi per vincoli di diversificazione:")
                     st.dataframe(pd.DataFrame([{"Ticker": tick.get(k, k), "Motivo": v} for k, v in rej.items()]), hide_index=True)
-            _portfolio_analytics_view(p.get("analytics", {}), tick)
+            _portfolio_analytics_view(p.get("analytics", {}), tick, "proposed")
     with t2:
         st.caption("Inserisci i tuoi titoli (notazione Yahoo: AAPL, ENI.MI, ASML.AS, 7203.T…) e il peso o l'importo. "
                    "I titoli verranno anche inclusi automaticamente nelle prossime analisi.")
@@ -653,7 +741,7 @@ def page_portfolio():
 
 
 def _analyze_user(ed: pd.DataFrame, U: pd.DataFrame):
-    from ire.portfolio import analyze_portfolio
+    from ire.portfolio import analyze_portfolio, serializable
     from ire.risk import weekly_returns
     from ire.sources import yahoo
 
@@ -702,7 +790,7 @@ def _analyze_user(ed: pd.DataFrame, U: pd.DataFrame):
     W = pd.DataFrame(weekly)
     bench = data.prices("SWDA.MI", "EUR")
     bw = weekly_returns(bench["adj_close"]) if not bench.empty else None
-    an = analyze_portfolio(weights, W, pd.DataFrame(meta_rows), bw)
+    an = serializable(analyze_portfolio(weights, W, pd.DataFrame(meta_rows), bw))
     tick = {**dict(zip(U.company_id, U.ticker)), **{k: k.replace("USER:", "") for k in weights if k.startswith("USER:")}}
     st.subheader("Le tue posizioni viste dal sistema")
     rows = []
@@ -715,14 +803,13 @@ def _analyze_user(ed: pd.DataFrame, U: pd.DataFrame):
                      "Punteggio robusto": rr["robust_score"].iloc[0] if len(rr) else None})
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
                  column_config={"Peso": st.column_config.NumberColumn(format="percent")})
-    _portfolio_analytics_view(an if isinstance(an, dict) else {}, tick)
+    _portfolio_analytics_view(an, tick, "mine")
 
 
 # =====================================================================================
 def page_changes():
     st.title("🔔 Cosa è cambiato")
-    from ire.changes import compute_changes
-
+    run_banner()
     r = data.runs()
     done = r[r.status == "completed"]
     if len(done) < 2:
@@ -733,7 +820,11 @@ def page_changes():
         new = c1.selectbox("Analisi recente", opts, index=0)
         old = c2.selectbox("Confronta con", opts, index=1)
         nid, oid = int(new.split()[0][1:]), int(old.split()[0][1:])
-        ch = compute_changes(data.con(), nid, oid)
+        modes = dict(zip(done.run_id, done["mode"]))
+        if modes.get(nid) != modes.get(oid):
+            st.warning(f"Le due analisi usano modalità diverse ({modes.get(nid)} vs {modes.get(oid)}): l'universo è diverso, "
+                       "quindi entrate e uscite dall'universo non vengono mostrate.")
+        ch = data.changes(nid, oid)
         if ch.empty:
             st.success("Nessun cambiamento rilevante.")
         else:
@@ -768,6 +859,7 @@ def page_data():
     st.title("📚 Dati, fonti e metodologia")
     if RUN is None:
         no_data()
+    run_banner()
     t1, t2, t3, t4 = st.tabs(["Copertura e qualità", "Esclusioni", "Discrepanze tra fonti", "Metodologia"])
     U = data.universe(RUN)
     with t1:
@@ -779,9 +871,16 @@ def page_data():
         fl = data.q("SELECT code, severity, COUNT(*) AS n FROM flags WHERE run_id=? GROUP BY code, severity ORDER BY n DESC", [RUN])
         st.markdown("**Segnalazioni per tipo**")
         st.dataframe(fl, hide_index=True, width="stretch")
-        lg = data.q("SELECT ts, level, stage, message FROM log WHERE run_id=? ORDER BY ts", [RUN])
-        with st.expander("Log dell'ultima analisi"):
+        runs_ = data.runs()
+        rid_log = int(runs_["run_id"].iloc[0]) if len(runs_) else RUN
+        lg = data.q("SELECT ts, level, stage, message FROM log WHERE run_id=? ORDER BY ts", [rid_log])
+        with st.expander(f"Log dell'ultima analisi (#{rid_log}, {STATUS_IT.get(runs_['status'].iloc[0], '')})"):
             st.dataframe(lg, hide_index=True, width="stretch")
+        st.markdown("**Storico delle analisi**")
+        st.dataframe(runs_[["run_id", "started_at", "finished_at", "mode", "status"]].assign(
+            status=runs_["status"].map(lambda x: STATUS_IT.get(x, x))), hide_index=True, width="stretch",
+            column_config={"run_id": "N.", "started_at": "Inizio (UTC)", "finished_at": "Fine (UTC)", "mode": "Modalità",
+                           "status": "Esito"})
     with t2:
         allc = data.all_companies()
         ex = allc[allc.in_universe == 0]
@@ -799,7 +898,10 @@ def page_data():
     with t4:
         p = os.path.join(os.path.dirname(HERE), "METHODOLOGY.md")
         if os.path.exists(p):
-            st.markdown(open(p, encoding="utf-8").read())
+            with open(p, encoding="utf-8") as fh:
+                st.markdown(esc(fh.read()))
+        else:
+            st.info("File METHODOLOGY.md non trovato nella cartella del progetto.")
 
 
 PAGES = {
