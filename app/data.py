@@ -57,6 +57,9 @@ def universe(run_id: int) -> pd.DataFrame:
     if not m.empty:
         mp = m.pivot_table(index="company_id", columns="metric", values="value", aggfunc="last")
         s = s.merge(mp, left_on="company_id", right_index=True, how="left")
+    for k in KEY_METRICS:          # a metric missing for every company must still exist as an empty column
+        if k not in s.columns:
+            s[k] = float("nan")
     s["label"] = s["ticker"] + " — " + s["name"].fillna("")
     return s
 
