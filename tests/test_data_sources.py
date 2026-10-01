@@ -352,3 +352,25 @@ def test_missing_seed_list_does_not_stop_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr(U, "scrape_index", lambda idx: ["AAA" + idx.suffix] if idx.suffix == ".MI" else [])
     df, notes = U.international_candidates()
     assert len(df) >= 1 and any("non trovata" in n for n in notes)
+
+
+def test_nordic_share_class_is_kept():
+    """Real run: 'NOVO B' from Wikipedia became NOVO.CO (not a Yahoo ticker) and Novo Nordisk was excluded."""
+    from ire.sources.universe_intl import INDICES, _clean_symbol
+
+    co = next(i for i in INDICES if i.suffix == ".CO")
+    st = next(i for i in INDICES if i.suffix == ".ST")
+    assert _clean_symbol("NOVO B", co) == "NOVO-B.CO"
+    assert _clean_symbol("NDA DK", co) == "NDA-DK.CO"
+    assert _clean_symbol("DSV", co) == "DSV.CO"
+    assert _clean_symbol("ERIC B", st) == "ERIC-B.ST"
+    dax = next(i for i in INDICES if i.suffix == ".DE")
+    assert _clean_symbol("SAP SE", dax) == "SAP.DE"          # non-Nordic: first token only
+
+
+def test_seed_list_is_in_the_repository():
+    from ire.sources.universe_intl import SEED_PATH, load_seed
+
+    assert SEED_PATH.exists()
+    df = load_seed()
+    assert len(df) > 600 and {"ticker", "index"} <= set(df.columns)

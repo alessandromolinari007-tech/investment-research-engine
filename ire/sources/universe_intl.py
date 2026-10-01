@@ -54,13 +54,20 @@ INDICES = [
 SYMBOL_COL = re.compile(r"(ticker|symbol|epic|code|stock\s*code|securities\s*code)", re.I)
 
 
+NORDIC_SUFFIXES = (".CO", ".ST", ".HE", ".OL")
+
+
 def _clean_symbol(raw: str, idx: IndexDef) -> str | None:
     s = str(raw).strip()
     if not s or s.lower() == "nan":
         return None
     s = re.sub(r"\[.*?\]", "", s)             # footnotes
     s = s.split(":")[-1].strip()              # 'XETRA: SAP' -> 'SAP'
-    s = s.split()[0] if s.split() else s
+    parts = s.split()
+    if idx.suffix in NORDIC_SUFFIXES and len(parts) >= 2 and re.fullmatch(r"[A-Z]{1,3}", parts[1].upper()):
+        s = f"{parts[0]}-{parts[1]}"           # Nordic share class: 'NOVO B' → 'NOVO-B' (Yahoo NOVO-B.CO)
+    else:
+        s = parts[0] if parts else s
     if idx.kind == "numeric4":
         # TSE codes: 4 digits, or (since 2024) alphanumeric like "285A" (letters B E I O Q V Z are not used)
         m = re.search(r"(?<![0-9A-Z])[0-9][0-9ACDFGHJKLMNPRSTUWXY][0-9][0-9ACDFGHJKLMNPRSTUWXY](?![0-9A-Z])", s.upper())
