@@ -102,3 +102,17 @@ def count_bars(counts: dict[str, int]) -> go.Figure:
     fig = base_layout(fig, "", height=max(200, 30 * len(items) + 40))
     fig.update_layout(hovermode="closest")
     return fig
+
+
+def quintile_bars(excess: list[float | None]) -> go.Figure:
+    """Average return of each fifth of the companies (Q1 = highest scores) minus the universe average."""
+    labels = ["Q1 (punteggi più alti)", "Q2", "Q3", "Q4", "Q5 (punteggi più bassi)"]
+    vals = [0.0 if v is None else float(v) * 100 for v in excess]
+    colors = [GOOD if v > 0 else BAD for v in vals]
+    fig = go.Figure(go.Bar(x=labels, y=vals, marker_color=colors, text=[f"{v:+.1f}".replace(".", ",") + "%" for v in vals],
+                           textposition="outside", cliponaxis=False,
+                           hovertemplate="%{x}: %{y:+.1f} punti percentuali rispetto alla media<extra></extra>"))
+    fig = base_layout(fig, "", height=300, yfmt=".0f")
+    fig.update_layout(hovermode="closest")
+    fig.update_yaxes(title="Differenza dalla media (punti %)", zeroline=True)
+    return fig

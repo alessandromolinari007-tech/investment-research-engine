@@ -246,6 +246,28 @@ CREATE TABLE IF NOT EXISTS qualitative (
     payload    TEXT    -- JSON: text flags, risk-factor diff, sources
 );
 
+CREATE TABLE IF NOT EXISTS backtests (
+    bt_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT,
+    params     TEXT,                       -- JSON
+    summary    TEXT                        -- JSON: statistics, readings, caveats
+);
+
+CREATE TABLE IF NOT EXISTS backtest_obs (
+    bt_id             INTEGER NOT NULL,
+    asof              TEXT NOT NULL,
+    company_id        TEXT NOT NULL,
+    ticker            TEXT,
+    sector            TEXT,
+    market_cap_usd    REAL,
+    robust_score      REAL,
+    robust_percentile REAL,
+    classification    TEXT,
+    fwd_6m            REAL,                -- total return in EUR after the date
+    fwd_12m           REAL,
+    PRIMARY KEY (bt_id, asof, company_id)
+);
+
 CREATE TABLE IF NOT EXISTS log (
     ts      TEXT,
     run_id  INTEGER,

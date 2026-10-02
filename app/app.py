@@ -930,6 +930,73 @@ def page_changes():
 
 
 # =====================================================================================
+def page_backtest():
+    ui.page_header("Verifica storica del metodo", eyebrow="Fiducia",
+                   subtitle="Se il sito avesse dato questi punteggi in passato, le azioni con i punteggi più alti sarebbero "
+                            "andate meglio delle altre? Qui c'è la risposta, con tutti i limiti.")
+    bt = data.latest_backtest()
+    if bt is None:
+        st.info("Il test storico non è ancora stato eseguito. Si lancia con **run_backtest.bat** (richiede 20-40 minuti "
+                "e un'analisi già completata). Poi ricarica questa pagina.")
+        ui.section("Perché serve", "Un sistema di punteggi può sembrare convincente e non funzionare. L'unico modo di "
+                   "scoprirlo è vedere cosa è successo dopo: è la differenza tra una teoria e una prova.")
+        return
+    st.caption(f"Test #{bt['bt_id']} del {str(bt['created_at'])[:10]} · {bt.get('n_companies')} società USA con bilanci SEC · "
+               f"{len(bt.get('dates', []))} date di verifica ogni {bt.get('step_months', 6)} mesi, "
+               f"dal {bt['dates'][0] if bt.get('dates') else 'n/d'}")
+    st.warning("**Leggi prima i limiti.** " + " ".join(bt.get("caveats", [])[:2]) +
+               " Un risultato positivo qui è incoraggiante ma non è una prova; un risultato nullo è un'informazione seria.")
+    horizons = [h for h in ("12", "6") if h in bt.get("stats", {}) and bt["stats"][h].get("n_dates")]
+    if not horizons:
+        st.info("Dati insufficienti per una conclusione.")
+        return
+    tabs = st.tabs([f"Dopo {h} mesi" for h in horizons])
+    LEVEL_BADGE = {"favorevole": "green", "non dimostrato": "orange", "contrario": "red", "n/d": "gray"}
+    for tab, h in zip(tabs, horizons):
+        s_ = bt["stats"][h]
+        rd = bt["readings"][h]
+        with tab:
+            st.markdown(ui.badge(rd["level"], LEVEL_BADGE.get(rd["level"], "gray")) + "  " + esc(rd["text"]))
+            c = st.columns(4)
+            c[0].metric(f"I {s_['top_n']} titoli con punteggio più alto", pct(s_["top_total"], 1) if s_.get("top_total") is not None else "n/d",
+                        help="Rendimento medio dopo l'orizzonte scelto, in euro, dividendi inclusi (media di tutte le date).")
+            c[1].metric("Tutte le società analizzate", pct(s_["universe_total"], 1) if s_.get("universe_total") is not None else "n/d",
+                        help="Media delle stesse società, senza scegliere: è il confronto onesto.")
+            c[2].metric("ETF MSCI World", pct(s_["bench_total"], 1) if s_.get("bench_total") is not None else "n/d",
+                        help="Il tuo investimento attuale, nello stesso periodo.")
+            c[3].metric("Volte in cui i migliori 20 battono la media",
+                        pct(s_["top_beats_universe_share"], 0) if s_.get("top_beats_universe_share") is not None else "n/d",
+                        help="Quota delle date di verifica in cui i 20 migliori hanno fatto meglio della media delle società.")
+            ui.section("Cinque gruppi di società, dal punteggio più alto al più basso",
+                       "Se il metodo funzionasse, le barre scenderebbero da sinistra a destra: il primo gruppo sopra la "
+                       "media, l'ultimo sotto.")
+            st.plotly_chart(charts.quintile_bars(s_["quintile_excess"]), width="stretch")
+            ui.section("Quanto è affidabile questa differenza",
+                       "Correlazione tra punteggio e rendimento successivo: 0 = nessun legame, 1 = perfetto. Nei mercati "
+                       "reali anche valori di 0,03-0,05 sono considerati utili se costanti nel tempo.")
+            m = st.columns(3)
+            m[0].metric("Correlazione media", num_it(s_["ic_mean"], 3) if s_.get("ic_mean") is not None else "n/d")
+            m[1].metric("Date con correlazione positiva", pct(s_["ic_positive_share"], 0) if s_.get("ic_positive_share") is not None else "n/d")
+            m[2].metric("I 20 migliori vs 500 scelte a caso",
+                        f"meglio del {num_it(s_['random_percentile_mean'] * 100, 0)}%" if s_.get("random_percentile_mean") is not None else "n/d",
+                        help="Se i 20 titoli fossero scelti a caso dalle stesse società, quante volte andrebbero peggio? "
+                             "Intorno al 50% = come scegliere a caso.")
+            if s_.get("classes"):
+                ui.section("Per etichetta", "Differenza media di rendimento rispetto alla media delle società, per ogni "
+                           "etichetta che il sito assegna. Poche osservazioni = poco affidabile.")
+                tab_ = pd.DataFrame(s_["classes"]).rename(columns={"classification": "Etichetta", "n": "Osservazioni",
+                                                                    "mean_excess": "Differenza media", "median_excess": "Differenza mediana"})
+                st.dataframe(tab_, hide_index=True, width="stretch", column_config={
+                    "Differenza media": st.column_config.NumberColumn(format="percent"),
+                    "Differenza mediana": st.column_config.NumberColumn(format="percent")})
+    with st.expander("Come è fatto il test e tutti i limiti"):
+        st.markdown("Per ogni data (ogni 6 mesi) il motore rifà **la vera analisi** usando solo ciò che era pubblico quel giorno: "
+                    "dei bilanci SEC si scartano tutti i documenti depositati dopo la data; prezzi, rischio, momentum e tassi "
+                    "sono tagliati alla data. Poi si guarda cosa hanno fatto le azioni nei 6 e 12 mesi successivi.")
+        for c_ in bt.get("caveats", []):
+            st.markdown("- " + esc(c_))
+
+
 def page_data():
     ui.page_header("Dati, fonti e metodologia", eyebrow="Trasparenza",
                    subtitle="Da dove vengono i numeri, chi è stato escluso e perché, e come lavora il motore.")
@@ -988,9 +1055,14 @@ PAGES = {
     "screener": st.Page(page_screener, title="Classifica", icon=":material/leaderboard:", url_path="classifica"),
     "portfolio": st.Page(page_portfolio, title="Portafoglio", icon=":material/pie_chart:", url_path="portafoglio"),
     "changes": st.Page(page_changes, title="Cambiamenti", icon=":material/notifications:", url_path="cambiamenti"),
+    "backtest": st.Page(page_backtest, title="Verifica del metodo", icon=":material/fact_check:", url_path="verifica"),
     "data": st.Page(page_data, title="Dati e metodologia", icon=":material/menu_book:", url_path="dati"),
 }
-nav = st.navigation(list(PAGES.values()), position="top")
+nav = st.navigation({
+    "Analisi": [PAGES["home"], PAGES["company"], PAGES["compare"], PAGES["screener"]],
+    "Portafoglio": [PAGES["portfolio"], PAGES["changes"]],
+    "Fiducia": [PAGES["backtest"], PAGES["data"]],
+}, position="top")
 
 
 if os.environ.get("IRE_TEST_PAGE"):          # used only by automated UI tests

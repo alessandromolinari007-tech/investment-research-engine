@@ -109,6 +109,10 @@ def main(argv=None):
     sub.add_parser("check", help="verifica configurazione e fonti dati")
     cf = sub.add_parser("configure", help="imposta il contatto richiesto dalla SEC")
     cf.add_argument("--check", action="store_true", help="verifica soltanto (codice di uscita 1 se manca)")
+    bt = sub.add_parser("backtest", help="verifica storica: il metodo avrebbe funzionato in passato?")
+    bt.add_argument("--start", default="2017-06-30", help="prima data di verifica (default 2017-06-30)")
+    bt.add_argument("--step-months", type=int, default=6)
+    bt.add_argument("--limit", type=int, default=None, help="limita il numero di società (prove)")
     w = sub.add_parser("watch", help="gestisce la watchlist")
     w.add_argument("action", choices=["add", "remove", "list"])
     w.add_argument("tickers", nargs="*")
@@ -131,6 +135,10 @@ def _dispatch(a) -> None:
         pl.run()
         if pl.status == "degraded":
             sys.exit(3)              # .bat files report "non completata"
+    elif a.cmd == "backtest":
+        from .backtest import run_backtest
+
+        run_backtest(start=a.start, step_months=a.step_months, limit=a.limit)
     elif a.cmd == "status":
         from .db import init_db
 

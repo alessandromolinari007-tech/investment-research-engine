@@ -288,3 +288,42 @@ dall'universo.
 - L'analisi del testo usa regole lessicali: può sbagliare in entrambe le direzioni; ogni segnalazione va letta
   nel documento originale.
 - Nessuna previsione: i punteggi riflettono il passato e il prezzo attuale.
+
+## 14. Verifica storica del metodo (`python -m ire backtest`, `run_backtest.bat`)
+
+**Domanda.** Se i punteggi di questo sistema fossero esistiti in passato, le azioni con i punteggi più alti sarebbero
+andate meglio delle altre?
+
+**Come.** Per una serie di date passate (ogni 6 mesi, dal 30/06/2017 salvo diversa indicazione) il motore rifà la vera
+analisi e il vero punteggio usando solo l'informazione pubblica a quella data:
+
+- dei bilanci SEC si scartano tutti i fatti con data di deposito successiva alla data di verifica; i valori successivi
+  (restatement compresi) non entrano. Il primo valore depositato è quello usato;
+- prezzi, volatilità, momentum, tasso privo di rischio (FRED) e "età dei dati" sono tagliati alla data (`ire/clock.py`);
+- il numero di azioni è riportato alla base degli split attuali, come i prezzi rettificati: la capitalizzazione non
+  cambia con uno split, quindi non entra informazione dal futuro;
+- punteggi relativi al settore con le sole società di quella data, soglia di capitalizzazione della run più recente,
+  stesse esclusioni (dati più vecchi di 550 giorni).
+
+Poi si misura il rendimento totale in euro (dividendi inclusi) da 1 giorno dopo la data a 6 e 12 mesi dopo.
+
+**Misure.** (1) correlazione di rango tra punteggio e rendimento successivo, data per data; media e statistica t su
+date che non si sovrappongono; (2) cinque gruppi per punteggio (differenza dalla media delle società); (3) i 20 titoli
+con punteggio più alto contro la media delle società, contro l'ETF MSCI World e contro 500 portafogli di 20 titoli
+scelti a caso; (4) rendimento per etichetta di classificazione.
+
+**Lettura.** "Favorevole" solo se correlazione > 0,02, differenza tra primo e ultimo gruppo > 0, statistica t ≥ 2 e i 20
+migliori battono almeno il 60% dei portafogli casuali. "Contrario" se la correlazione è negativa con t ≤ −2. Tutto il
+resto è "non dimostrato": il caso normale, perché i vantaggi veri sono piccoli e instabili.
+
+**Limiti che i dati gratuiti non permettono di eliminare**
+
+- *Sopravvivenza*: restano solo società ancora in database oggi; fallite, acquisite o tolte dalla borsa mancano, i loro
+  prezzi non sono disponibili. Gonfia i rendimenti assoluti; l'effetto sulla differenza tra gruppi non ha un segno certo.
+- *Selezione per dimensione*: l'insieme è quello che ha superato il filtro di capitalizzazione di OGGI (con
+  `run_pipeline.bat`, soglia più bassa, il bias diminuisce).
+- Solo emittenti USA che depositano alla SEC in dollari (date di deposito affidabili).
+- Non usati: stime degli analisti, bilanci Yahoo, testo dei report, eventi 8-K: non esiste una copia storica gratuita.
+- Settore e industria sono quelli di oggi.
+- Le date di verifica a 6 mesi si sovrappongono sull'orizzonte di 12: la statistica t usa solo date non sovrapposte.
+- Un risultato favorevole è una condizione necessaria, non una prova; un risultato nullo è un'informazione seria.

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .metrics import MetricSet, compute_fundamental_metrics
+from . import clock
 from .normalize.model import Financials
 from .risk import price_risk_metrics
 from .glossary import label as glabel, num_it, pct as fpct
@@ -126,7 +127,7 @@ def analyze_company(company: dict[str, Any], fin: Financials, info: dict[str, An
         for k, v in pr.items():
             m.add(k, v, "calculated", "prezzi fino a " + str(close_local.index.max().date()), method.get(k, k))
         last = close_local.index.max()
-        if (pd.Timestamp.today() - last).days > 7:
+        if (clock.today() - last).days > 7:
             res.flags.append(_flag("STALE_PRICE", "data", f"Ultimo prezzo del {last.date()}"))
 
     # --------------------------------------------------------------- reverse DCF
@@ -314,7 +315,7 @@ def fundamental_flags(m: MetricSet, fin: Financials, company: dict[str, Any]) ->
     if yrs is not None and yrs < 4:
         f.append(_flag("SHORT_HISTORY", "data", f"Solo {num_it(yrs, 0)} anni di bilanci: metriche di crescita e stabilità poco affidabili"))
     restated = [r for r in fin.fact_rows if r.get("restated") and r["item"] in ("revenue", "net_income")
-                and r["period_end"] >= str((pd.Timestamp.today() - pd.DateOffset(years=3)).date())
+                and r["period_end"] >= str((clock.today() - pd.DateOffset(years=3)).date())
                 and r.get("original_value") and abs(r["value"] / r["original_value"] - 1) > 0.02]
     if restated:
         r0 = restated[0]

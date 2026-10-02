@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from . import clock
 from .normalize.model import Financials
 
 
@@ -406,7 +407,7 @@ def compute_fundamental_metrics(
     # ------------------------------------------------------------ data quality meta
     m.add("years_of_data", float(len(a)), "observed", "", "numero di anni fiscali disponibili")
     lpe = fin.latest_period_end
-    m.add("data_age_days", float((pd.Timestamp.today().normalize() - lpe).days) if lpe is not None else None,
+    m.add("data_age_days", float((clock.today() - lpe).days) if lpe is not None else None,
           "calculated", "", "giorni dalla fine dell'ultimo periodo contabile disponibile")
     return m
 

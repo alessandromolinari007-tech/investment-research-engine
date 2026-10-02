@@ -178,3 +178,22 @@ def test_company_page_with_no_scored_companies(world, monkeypatch):
     at = _page("company", monkeypatch)
     assert not at.exception, [e.value for e in at.exception]
     assert any("non contiene società" in w.value for w in at.warning)
+
+
+def test_backtest_page_without_and_with_a_test(world, monkeypatch):
+    import pandas as pd
+
+    import ire.backtest as B
+    from ire.pipeline import Pipeline
+
+    Pipeline(mode="quick", verbose=False).run()
+    at = _page("backtest")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("non è ancora stato eseguito" in i.value for i in at.info)
+
+    monkeypatch.setattr(B, "MIN_UNIVERSE", 12)
+    B.run_backtest(progress=lambda m: None, start=f"{pd.Timestamp.today().year - 5}-06-30", min_cap_usd=1e9)
+    at = _page("backtest")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Leggi prima i limiti" in w.value for w in at.warning)
+    assert len(at.metric) >= 6

@@ -196,3 +196,17 @@ def save_user_portfolio(df: pd.DataFrame) -> None:
         c.execute("INSERT OR REPLACE INTO user_portfolio (ticker, weight, note) VALUES (?,?,?)",
                   (t, w, "; ".join(notes) or None))
     c.commit()
+
+
+@st.cache_data(ttl=60)
+def latest_backtest() -> dict[str, Any] | None:
+    """Most recent historical test (summary JSON + id + date), or None."""
+    import json as _json
+
+    r = q("SELECT bt_id, created_at, params, summary FROM backtests ORDER BY bt_id DESC LIMIT 1")
+    if r.empty:
+        return None
+    row = r.iloc[0]
+    out = _json.loads(row["summary"] or "{}")
+    out.update({"bt_id": int(row["bt_id"]), "created_at": row["created_at"], "params": _json.loads(row["params"] or "{}")})
+    return out
