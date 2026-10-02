@@ -47,6 +47,7 @@ from .sources import sec, yahoo
 from .sources.fx_macro import RATE_SERIES, FxTable
 
 HORIZONS = (6, 12)                 # months
+PILLARS = ("quality", "valuation", "growth", "financial_strength", "capital_allocation")
 TOP_N = 20
 N_RANDOM = 500
 MIN_PRICE_HISTORY = 250            # trading days needed before the date (risk metrics, momentum)
@@ -149,6 +150,7 @@ def evaluate(obs: pd.DataFrame, bench: dict[str, dict[int, float | None]], horiz
             continue
         per_date = []
         pooled = []
+        pill: dict[str, list[tuple[pd.Timestamp, float]]] = {p: [] for p in PILLARS}
         for d, g in obs.groupby("asof"):
             g = g.dropna(subset=["robust_score", col])
             if len(g) < MIN_UNIVERSE:
@@ -168,6 +170,11 @@ def evaluate(obs: pd.DataFrame, bench: dict[str, dict[int, float | None]], horiz
             per_date.append({"asof": pd.Timestamp(d), "n": len(g), "ic": float(ic) if pd.notna(ic) else None,
                              "uni": uni, "q": qmeans, "top": top_mean, "rand_pct": float((rand_means < top_mean).mean()),
                              "bench": b})
+            for p in PILLARS:
+                if p in g.columns and g[p].notna().sum() >= MIN_UNIVERSE:
+                    v = g[p].corr(g[col], method="spearman")
+                    if pd.notna(v):
+                        pill[p].append((pd.Timestamp(d), float(v)))
             gg = g.assign(excess=g[col] - uni)
             pooled.append(gg[["classification", "excess"]])
         if not per_date:
@@ -203,6 +210,10 @@ def evaluate(obs: pd.DataFrame, bench: dict[str, dict[int, float | None]], horiz
             "top_beats_bench_share": _r(np.mean([x > 0 for x in bench_ex]), 3) if bench_ex else None,
             "universe_excess_vs_bench": _r(np.mean(uni_vs_bench)) if uni_vs_bench else None,
             "random_percentile_mean": _r(np.mean([p["rand_pct"] for p in per_date]), 3),
+            "pillars": {p: {"ic_mean": _r(np.mean([v for _, v in x])),
+                            "ic_t_non_overlapping": _r(_t_stat([v for d_, v in x if d_ in nov]), 2),
+                            "ic_positive_share": _r(np.mean([v > 0 for _, v in x]), 3)}
+                        for p, x in pill.items() if x},
             "classes": [{"classification": r["classification"], "n": int(r["count"]), "mean_excess": _r(r["mean"]),
                          "median_excess": _r(r["median"])} for _, r in cls_tab.iterrows()],
         }
@@ -269,6 +280,10 @@ def run_backtest(progress: Callable[[str], None] = print, start: str = "2017-06-
 
     cfg = load_config()
     con = init_db()
+    have = {r["name"] for r in con.execute("PRAGMA table_info(backtest_obs)")}
+    for col in PILLARS:                                         # databases created before the pillars were stored
+        if col not in have:
+            con.execute(f"ALTER TABLE backtest_obs ADD COLUMN {col} REAL")
     last_run = con.execute("SELECT run_id, mode FROM runs WHERE status IN ('completed','degraded') "
                            "ORDER BY run_id DESC LIMIT 1").fetchone()
     if last_run is None:
@@ -352,6 +367,7 @@ def run_backtest(progress: Callable[[str], None] = print, start: str = "2017-06-
                              "sector": r.get("sector"), "market_cap_usd": _num(r.get("market_cap")),
                              "robust_score": _num(r.get("robust_score")), "robust_percentile": _num(r.get("robust_percentile")),
                              "classification": r.get("classification"),
+                             **{p: _num(r.get(p)) for p in PILLARS},
                              **{f"fwd_{h}m": f.get(h) for h in HORIZONS}})
         bench_fwd[str(d.date())] = {h: (forward_return(bench, d, h) if bench is not None else None) for h in HORIZONS}
         say(f"   {d.date()}: {len(scored)} società con punteggio")

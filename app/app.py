@@ -1001,6 +1001,18 @@ def page_backtest():
                         f"meglio del {num_it(s_['random_percentile_mean'] * 100, 0)}%" if s_.get("random_percentile_mean") is not None else "n/d",
                         help="Se i 20 titoli fossero scelti a caso dalle stesse società, quante volte andrebbero peggio? "
                              "Intorno al 50% = come scegliere a caso.")
+            if s_.get("pillars"):
+                ui.section("Quale parte del punteggio ha funzionato?",
+                           "Lo stesso controllo, una parte alla volta. Una parte può avere un segnale anche quando il totale non "
+                           "lo ha. Valori vicini a 0 = nessun legame; serve una correlazione costante, non un singolo valore alto.")
+                from ire.scoring import PILLAR_IT
+                pt = pd.DataFrame([{"Parte": PILLAR_IT.get(k, k), "Correlazione media": v["ic_mean"],
+                                    "Date positive": v["ic_positive_share"], "Affidabilità (t)": v["ic_t_non_overlapping"]}
+                                   for k, v in s_["pillars"].items()])
+                st.dataframe(pt, hide_index=True, width="stretch", column_config={
+                    "Correlazione media": st.column_config.NumberColumn(format="%.3f"),
+                    "Date positive": st.column_config.NumberColumn(format="percent"),
+                    "Affidabilità (t)": st.column_config.NumberColumn(format="%.1f", help="Sopra 2 (o sotto -2) = difficile da attribuire al caso")})
             if s_.get("classes"):
                 ui.section("Per etichetta", "Differenza media di rendimento rispetto alla media delle società, per ogni "
                            "etichetta che il sito assegna. Poche osservazioni = poco affidabile.")

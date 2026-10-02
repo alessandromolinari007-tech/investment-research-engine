@@ -173,3 +173,33 @@ def test_backtest_end_to_end_on_the_synthetic_world(world, monkeypatch):
     assert all(r["robust_score"] is not None for r in con.execute("SELECT robust_score FROM backtest_obs WHERE bt_id=?", (bt,)))
     # the synthetic prices are random walks, unrelated to the statements: no skill must be claimed
     assert summ["readings"]["12"]["level"] != "favorevole"
+
+
+def test_pillar_correlations_find_the_pillar_that_carries_the_signal():
+    obs = _obs(+1.0)
+    rng = np.random.default_rng(3)
+    obs["quality"] = obs["robust_score"]                       # carries the signal
+    obs["valuation"] = rng.normal(size=len(obs))               # pure noise
+    st = B.evaluate(obs, {})["12"]
+    assert st["pillars"]["quality"]["ic_mean"] > 0.2 and st["pillars"]["quality"]["ic_t_non_overlapping"] >= 2
+    assert abs(st["pillars"]["valuation"]["ic_mean"]) < 0.1
+    assert "growth" not in st["pillars"]                       # absent column: skipped, no crash
+
+
+def test_old_database_gets_the_pillar_columns(world, monkeypatch):
+    from ire.db import init_db
+    from ire.pipeline import Pipeline
+
+    Pipeline(mode="quick", verbose=False).run()
+    con = init_db()
+    con.execute("DROP TABLE backtest_obs")
+    con.execute("CREATE TABLE backtest_obs (bt_id INTEGER NOT NULL, asof TEXT NOT NULL, company_id TEXT NOT NULL, ticker TEXT,"
+                " sector TEXT, market_cap_usd REAL, robust_score REAL, robust_percentile REAL, classification TEXT,"
+                " fwd_6m REAL, fwd_12m REAL, PRIMARY KEY (bt_id, asof, company_id))")
+    con.commit()
+    monkeypatch.setattr(B, "MIN_UNIVERSE", 12)
+    bt = B.run_backtest(progress=lambda m: None, start=f"{pd.Timestamp.today().year - 5}-06-30", min_cap_usd=1e9)
+    cols = {r["name"] for r in init_db().execute("PRAGMA table_info(backtest_obs)")}
+    assert set(B.PILLARS) <= cols
+    n = init_db().execute("SELECT COUNT(quality) FROM backtest_obs WHERE bt_id=?", (bt,)).fetchone()[0]
+    assert n > 0

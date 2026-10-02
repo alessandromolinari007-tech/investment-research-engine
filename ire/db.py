@@ -270,6 +270,11 @@ CREATE TABLE IF NOT EXISTS backtest_obs (
     robust_score      REAL,
     robust_percentile REAL,
     classification    TEXT,
+    quality           REAL,                -- the five pillars of the score on that date
+    valuation         REAL,
+    growth            REAL,
+    financial_strength REAL,
+    capital_allocation REAL,
     fwd_6m            REAL,                -- total return in EUR after the date
     fwd_12m           REAL,
     PRIMARY KEY (bt_id, asof, company_id)
