@@ -97,3 +97,21 @@ min_weeks_3y = 130
 "Giappone" = 0.20
 "Asia-Pacifico" = 0.20
 "Altro" = 0.10
+
+[telegram]
+# Avvisi sul telefono (opzionali). NON scrivere qui il token: va in config.local.toml, che non viene
+# pubblicato. Il modo piu' semplice: python -m ire telegram  (ti guida passo per passo)
+bot_token = ""
+chat_id = ""
+
+[alerts]
+# Cosa mandare su Telegram dopo ogni analisi (solo se Telegram e' configurato)
+on_problem = true       # analisi fallita o incompleta
+summary = true          # riepilogo breve a ogni analisi completata
+on_changes = true       # peggioramenti importanti sui titoli che segui (osservati, tuoi, portafoglio proposto)
+on_portfolio = true     # titoli entrati o usciti dal portafoglio proposto
+
+[update]
+# 'python -m ire update' (usato dagli aggiornamenti automatici) rifa' l'analisi solo se l'ultima
+# completata e' piu' vecchia di cosi' tanti giorni. I bilanci escono ogni trimestre: piu' spesso non serve.
+max_age_days = 7

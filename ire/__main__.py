@@ -62,6 +62,55 @@ def configure(check_only: bool = False) -> bool:
     return ok
 
 
+def configure_telegram(test_only: bool = False) -> bool:
+    """Guided setup of the Telegram alerts. Token and chat id are written ONLY in config.local.toml."""
+    from .config import load_config, set_local_value
+    from .notify import TOKEN_RE, detect_chat_id, get_me, redact, send_telegram, telegram_configured
+
+    if test_only:
+        cfg = load_config(reload=True)
+        if not telegram_configured(cfg):
+            print("Telegram non è configurato: esegui `python -m ire telegram`.")
+            return False
+        ok, err = send_telegram("Prova avvisi: se leggi questo messaggio, il collegamento funziona.", cfg)
+        print("Messaggio di prova inviato." if ok else f"Invio non riuscito: {err}")
+        return ok
+    if not sys.stdin or not sys.stdin.isatty():
+        print("Serve una finestra interattiva: apri setup_telegram.bat (o `python -m ire telegram` in un terminale).")
+        return False
+    print("COLLEGAMENTO TELEGRAM (una volta sola, 3 minuti)")
+    print("  1. In Telegram cerca  @BotFather  e scrivigli:  /newbot")
+    print("  2. Scegli un nome e un nome utente per il tuo bot (deve finire con 'bot').")
+    print("  3. BotFather ti risponde con un TOKEN lungo (tipo 123456789:ABC...). Copialo.")
+    print("Il token resta SOLO sul tuo PC (config.local.toml, non pubblicato) e va solo a telegram.org.")
+    token = input("Incolla qui il token e premi Invio: ").strip()
+    if not TOKEN_RE.match(token):
+        print("Il token non ha il formato giusto: niente è stato salvato. Riprova.")
+        return False
+    try:
+        username = get_me(token)
+    except RuntimeError as e:
+        print(f"Telegram non accetta il token: {redact(e, token)}")
+        return False
+    print(f"Bot trovato: @{username}.")
+    input(f"Ora in Telegram apri il tuo bot (@{username}), premi AVVIA e scrivi 'ciao'. Poi torna qui e premi Invio... ")
+    try:
+        chat = detect_chat_id(token)
+    except RuntimeError as e:
+        print(f"Lettura dei messaggi non riuscita: {redact(e, token)}")
+        return False
+    if not chat:
+        print("Non vedo messaggi per il bot. Controlla di aver scritto al bot giusto e riprova.")
+        return False
+    set_local_value("telegram", "bot_token", token)
+    path = set_local_value("telegram", "chat_id", chat)
+    cfg = load_config(reload=True)
+    ok, err = send_telegram("Collegamento riuscito. Da ora ricevi qui gli avvisi del tuo Investment Research Engine "
+                            "(analisi completate, problemi, cambiamenti importanti). Non è un consiglio di investimento.", cfg)
+    print(f"Salvato in {path.name}. " + ("Messaggio di prova inviato: controlla il telefono." if ok else f"Invio di prova non riuscito: {err}"))
+    return ok
+
+
 def _free_port(preferred: int) -> int:
     """`preferred` if free, otherwise the next free port (e.g. another interface already open on 8501)."""
     import socket
@@ -109,6 +158,11 @@ def main(argv=None):
     sub.add_parser("check", help="verifica configurazione e fonti dati")
     cf = sub.add_parser("configure", help="imposta il contatto richiesto dalla SEC")
     cf.add_argument("--check", action="store_true", help="verifica soltanto (codice di uscita 1 se manca)")
+    up = sub.add_parser("update", help="rifà l'analisi solo se quella precedente è vecchia (usato dagli aggiornamenti automatici)")
+    up.add_argument("--max-age-days", type=float, default=None)
+    up.add_argument("--mode", choices=["quick", "standard", "full"], default=None)
+    tg = sub.add_parser("telegram", help="collega gli avvisi su Telegram (passo per passo) o li prova")
+    tg.add_argument("--test", action="store_true", help="invia solo un messaggio di prova")
     bt = sub.add_parser("backtest", help="verifica storica: il metodo avrebbe funzionato in passato?")
     bt.add_argument("--start", default="2017-06-30", help="prima data di verifica (default 2017-06-30)")
     bt.add_argument("--step-months", type=int, default=6)
@@ -135,6 +189,30 @@ def _dispatch(a) -> None:
         pl.run()
         if pl.status == "degraded":
             sys.exit(3)              # .bat files report "non completata"
+    elif a.cmd == "update":
+        from .config import load_config
+        from .db import init_db
+        from .pipeline import Pipeline
+        from .schedule import update_needed
+
+        cfg = load_config()
+        con = init_db()
+        max_age = a.max_age_days if a.max_age_days is not None else float(cfg.get("update.max_age_days", 7))
+        needed, mode, why = update_needed(con, max_age, a.mode or cfg.universe_mode)
+        con.close()
+        print(f"Aggiornamento: {why}.")
+        if not needed:
+            return
+        try:
+            pl = Pipeline(mode=a.mode or mode)
+        except RuntimeError as e:
+            print(f"Non avviato: {e}")
+            return
+        pl.run()
+        if pl.status == "degraded":
+            sys.exit(3)
+    elif a.cmd == "telegram":
+        sys.exit(0 if configure_telegram(test_only=a.test) else 1)
     elif a.cmd == "backtest":
         from .backtest import run_backtest
 

@@ -80,6 +80,31 @@ def local_config_path(path: Path | None = None) -> Path:
     return Path(path or CONFIG_PATH).with_name("config.local.toml")
 
 
+def set_local_value(section: str, key: str, value: str, path: Path | None = None) -> Path:
+    """Writes `key = "value"` under [section] of config.local.toml (created if missing), keeping other lines.
+    Only for simple values (no quotes or line breaks)."""
+    if any(c in value for c in '"\\\n\r'):
+        raise ValueError("valore non scrivibile")
+    p = local_config_path(path)
+    lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else ["# Impostazioni personali: NON vengono "
+                                                                       "pubblicate su GitHub (vedi .gitignore)."]
+    head = f"[{section}]"
+    stripped = [ln.strip() for ln in lines]
+    if head not in stripped:
+        lines += ["", head]
+        stripped = [ln.strip() for ln in lines]
+    i = stripped.index(head)
+    j = i + 1
+    while j < len(lines) and not lines[j].strip().startswith("["):
+        if lines[j].strip().startswith(key) and lines[j].split("=")[0].strip() == key:
+            lines.pop(j)
+            continue
+        j += 1
+    lines.insert(i + 1, f'{key} = "{value}"')
+    p.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return p
+
+
 def _read_toml(p: Path) -> dict[str, Any]:
     raw = p.read_bytes()
     if raw.startswith(b"\xef\xbb\xbf"):          # UTF-8 with BOM (Notepad "UTF-8 con BOM")
@@ -161,6 +186,20 @@ def validate(cfg: Config) -> list[str]:
         errs.append(f"portfolio.min_positions ({mp:.0f}) è maggiore di portfolio.target_positions ({tp:.0f})")
     for k in (cfg.get("portfolio.max_region_weight", {}) or {}):
         num(f"portfolio.max_region_weight.{k}", 0, 1)
+    num("update.max_age_days", 1, 365)
+    for k in ("on_problem", "summary", "on_changes", "on_portfolio"):
+        v = cfg.get(f"alerts.{k}", True)
+        if not isinstance(v, bool):
+            errs.append(f"alerts.{k} = {v!r}: deve essere true o false")
+    import re as _re
+
+    tok = cfg.get("telegram.bot_token", "")
+    if tok and not _re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{30,60}", str(tok)):
+        errs.append("telegram.bot_token: formato non valido (deve essere quello dato da BotFather, "
+                    "tipo 123456789:ABC...); esegui `python -m ire telegram` per rifarlo")
+    chat = cfg.get("telegram.chat_id", "")
+    if chat and not _re.fullmatch(r"-?\d{3,20}", str(chat)):
+        errs.append("telegram.chat_id: deve essere un numero (esegui `python -m ire telegram`)")
     return errs
 
 

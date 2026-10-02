@@ -122,6 +122,7 @@ class Pipeline:
             else:
                 self.say(f"Analisi completata in {(time.time() - self.t0) / 60:.1f} minuti. "
                          f"Avvia l'interfaccia con: run_app.bat (oppure: python -m ire app)")
+            self._notify()
         except BaseException as e:  # noqa: BLE001  (also Ctrl+C / closed window → 'interrupted')
             interrupted = isinstance(e, (KeyboardInterrupt, SystemExit))
             status = "interrupted" if interrupted else "failed"
@@ -134,10 +135,25 @@ class Pipeline:
                 self.con.commit()
             except Exception:  # noqa: BLE001
                 pass
+            if status == "failed":
+                self._notify()
             raise
         finally:
             self.lock.release()
         return self.run_id
+
+    def _notify(self) -> None:
+        """Telegram alerts (only if configured). An alert can never break or change the outcome of a run."""
+        try:
+            from .notify import notify_after_run
+
+            res = notify_after_run(self.con, self.run_id, self.cfg)
+            if res["sent"]:
+                self.say("   avviso Telegram inviato")
+            elif res["error"]:
+                self.say(f"   avviso Telegram non inviato: {res['error']}", "warning")
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------ stages
     def stage_macro(self) -> None:

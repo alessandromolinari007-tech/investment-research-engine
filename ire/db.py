@@ -246,6 +246,13 @@ CREATE TABLE IF NOT EXISTS qualitative (
     payload    TEXT    -- JSON: text flags, risk-factor diff, sources
 );
 
+CREATE TABLE IF NOT EXISTS alerts_sent (
+    run_id  INTEGER NOT NULL,
+    kind    TEXT NOT NULL,                 -- problem | summary | changes | portfolio
+    sent_at TEXT,
+    PRIMARY KEY (run_id, kind)
+);
+
 CREATE TABLE IF NOT EXISTS backtests (
     bt_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT,

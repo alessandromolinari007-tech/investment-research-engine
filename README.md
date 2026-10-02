@@ -38,8 +38,21 @@ Riga di comando (con `.venv` attivo):
 | `python -m ire status` | ultime analisi ed eventuali errori |
 | `python -m ire app` | interfaccia web |
 | `python -m ire watch add\|remove\|list TICKER` | watchlist (sempre analizzata) |
+| `python -m ire backtest [--start 2017-06-30]` | verifica storica: il metodo avrebbe funzionato in passato? (`run_backtest.bat`) |
+| `python -m ire update [--max-age-days N]` | rifà l'analisi solo se l'ultima è più vecchia di N giorni (aggiornamenti automatici) |
+| `python -m ire telegram [--test]` | collega gli avvisi su Telegram (`setup_telegram.bat`) |
 
 Ripeti l'analisi ogni settimana o mese: la pagina *Cambiamenti e watchlist* mostra cosa è peggiorato.
+
+### Aggiornamenti automatici e avvisi (facoltativi)
+- `schedule_updates.bat` crea nell'Utilità di pianificazione di Windows un'attività (solo per il tuo utente) che ogni
+  giorno alle 12:30 e a ogni accesso lancia `run_update.bat`: l'analisi viene rifatta solo se la precedente ha più di
+  7 giorni (`[update] max_age_days`). Funziona con il PC acceso; registro in `logs\update.log`. `unschedule_updates.bat` la toglie.
+- `setup_telegram.bat` (una volta, 3 minuti) collega un bot Telegram: dopo ogni analisi ricevi un riepilogo, i problemi,
+  i peggioramenti importanti sui titoli che segui e le entrate/uscite del portafoglio proposto (si regola in `[alerts]`).
+  Token e chat id restano solo in `config.local.toml`, mai su GitHub. Il sistema non invia mai ordini a un broker.
+- `run_backtest.bat` (20-40 minuti, dopo un'analisi completa) verifica se i punteggi del passato avrebbero anticipato
+  rendimenti migliori; il risultato è nella pagina *Verifica del metodo*.
 
 ## Test
 `python -m pytest -q` — test offline su dati **sintetici** (nessun dato reale è inventato o incluso).
