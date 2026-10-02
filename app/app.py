@@ -930,6 +930,25 @@ def page_changes():
 
 
 # =====================================================================================
+def render_track_record():
+    ui.section("Prova dal vivo", "Come sono andati, da quando sono stati proposti, i portafogli suggeriti dalle analisi "
+               "passate, confrontati con l'ETF MSCI World negli stessi giorni. È la prova più onesta: la proposta esisteva "
+               "prima dei prezzi. Servono mesi: poche settimane sono solo rumore.")
+    tr = data.track_record()
+    if not tr:
+        st.info("Ancora nessun dato: serve almeno una analisi completata e qualche giorno di prezzi dopo di essa.")
+        return
+    df = pd.DataFrame(tr)
+    st.dataframe(df[["run_id", "start", "days", "portfolio_return", "benchmark_return", "excess"]], hide_index=True,
+                 width="stretch", column_config={
+                     "run_id": "Analisi", "start": "Proposta del", "days": "Giorni",
+                     "portfolio_return": st.column_config.NumberColumn("Portafoglio proposto", format="percent"),
+                     "benchmark_return": st.column_config.NumberColumn("MSCI World", format="percent"),
+                     "excess": st.column_config.NumberColumn("Differenza", format="percent")})
+    st.caption("Acquisto al primo prezzo dopo l'analisi, pesi come proposti, nessun ribilanciamento, costi e tasse esclusi, "
+               "rendimento totale in euro. Analisi ripetute a breve distanza hanno quasi lo stesso portafoglio: non sono prove indipendenti.")
+
+
 def page_backtest():
     ui.page_header("Verifica storica del metodo", eyebrow="Fiducia",
                    subtitle="Se il sito avesse dato questi punteggi in passato, le azioni con i punteggi più alti sarebbero "
@@ -940,6 +959,7 @@ def page_backtest():
                 "e un'analisi già completata). Poi ricarica questa pagina.")
         ui.section("Perché serve", "Un sistema di punteggi può sembrare convincente e non funzionare. L'unico modo di "
                    "scoprirlo è vedere cosa è successo dopo: è la differenza tra una teoria e una prova.")
+        render_track_record()
         return
     st.caption(f"Test #{bt['bt_id']} del {str(bt['created_at'])[:10]} · {bt.get('n_companies')} società USA con bilanci SEC · "
                f"{len(bt.get('dates', []))} date di verifica ogni {bt.get('step_months', 6)} mesi, "
@@ -989,12 +1009,153 @@ def page_backtest():
                 st.dataframe(tab_, hide_index=True, width="stretch", column_config={
                     "Differenza media": st.column_config.NumberColumn(format="percent"),
                     "Differenza mediana": st.column_config.NumberColumn(format="percent")})
+    render_track_record()
     with st.expander("Come è fatto il test e tutti i limiti"):
         st.markdown("Per ogni data (ogni 6 mesi) il motore rifà **la vera analisi** usando solo ciò che era pubblico quel giorno: "
                     "dei bilanci SEC si scartano tutti i documenti depositati dopo la data; prezzi, rischio, momentum e tassi "
                     "sono tagliati alla data. Poi si guarda cosa hanno fatto le azioni nei 6 e 12 mesi successivi.")
         for c_ in bt.get("caveats", []):
             st.markdown("- " + esc(c_))
+
+
+LESSON = [
+    ("1. Guadagna davvero?", ["operating_margin", "fcf_margin", "pct_years_profitable"],
+     "Un'azienda sana trasforma i ricavi in utili e, soprattutto, in cassa. Guarda se i margini sono stabili e se la cassa "
+     "libera (FCF) è positiva: gli utili si possono 'aggiustare', la cassa molto meno."),
+    ("2. Cresce?", ["revenue_cagr_5y", "revenue_growth_last_fy"],
+     "La crescita dei ricavi è il motore a lungo termine. Una crescita molto alta può essere già nel prezzo; una crescita "
+     "che rallenta è un segnale da capire."),
+    ("3. Quanto debito ha?", ["net_debt_ebitda", "interest_coverage"],
+     "Il debito amplifica i guadagni e anche le perdite. Cosa è 'troppo' dipende dal settore: confrontala con i pari, non con "
+     "un numero assoluto."),
+    ("4. Quanto la sto pagando?", ["pe", "ev_ebit", "fcf_yield", "implied_fcf_growth"],
+     "Un'ottima azienda pagata troppo può dare rendimenti mediocri. 'Crescita implicita nel prezzo' dice quanta crescita il "
+     "mercato sta già scontando: se è molto più alta di quella passata, il prezzo richiede che vada tutto bene."),
+    ("5. Quanto può scendere?", ["vol_1y", "max_drawdown_5y"],
+     "Prima di comprare, chiediti se resteresti calmo vedendo il titolo perdere la 'perdita massima' qui sotto. Chi vende "
+     "nel panico trasforma una perdita temporanea in una definitiva."),
+]
+CHECKLIST = [
+    "Perché questa azione e non il mio ETF? Cosa so che il mercato non sa? Se non so rispondere, la risposta è l'ETF.",
+    "Se perdesse la 'perdita massima 5 anni' che vedo nella scheda, resterei tranquillo o venderei nel panico?",
+    "Quanto pesa sul mio patrimonio? Una singola azione dovrebbe essere una parte piccola: il nucleo resta diversificato.",
+    "Ho letto punti deboli, segnalazioni e 'cosa invaliderebbe la tesi' nella scheda?",
+    "Quanto mi costa comprare e vendere (commissioni, imposta di bollo, tasse sulle plusvalenze)? Lo verifico con il mio broker o un commercialista.",
+    "Per quanto la tengo? Scrivo oggi in quale caso la venderei, così non decido sull'onda dell'emozione.",
+    "Posso comprarla dal mio broker, in quale valuta, con quale rischio di cambio?",
+    "L'ho 'provata a carta' per qualche mese (guardando solo cosa farebbe) prima di metterci soldi veri?",
+]
+MISTAKES = [
+    ("Inseguire ciò che è appena salito", "I titoli in cima alle classifiche dei rendimenti recenti sono quelli che tutti stanno comprando."),
+    ("Scambiare 'economica' per 'buona'", "Un prezzo basso può essere meritato (azienda in declino): è la 'value trap' che il sito prova a segnalare."),
+    ("Concentrarsi", "Poche azioni = il caso conta più dell'abilità. La diversificazione protegge da ciò che non puoi prevedere."),
+    ("Comprare e vendere spesso", "Ogni operazione costa commissioni e tasse, e l'evidenza storica dice che chi opera di più, in media, guadagna meno."),
+    ("Fidarsi di una sola fonte o di un solo numero", "Anche i dati gratuiti sbagliano: per questo il sito mostra fonte, data e discrepanze."),
+    ("Vendere nel panico", "Le discese fanno parte del gioco: il rischio vero è non averle messe in conto prima."),
+    ("Credere ai punteggi come a previsioni", "Il punteggio descrive il passato e il prezzo di oggi. Non prevede il futuro: per questo c'è la pagina di verifica."),
+]
+
+
+def page_learn():
+    ui.page_header("Impara a investire con i tuoi dati", eyebrow="Imparare",
+                   subtitle="Un percorso breve, basato sui numeri reali che il sito ha raccolto. Strumento educativo: "
+                            "non è un consiglio di investimento.")
+    if RUN is None:
+        no_data()
+    t1, t2, t3, t4, t5 = st.tabs(["Da dove parti", "Leggere un'azienda", "Funziona davvero?", "Prima di comprare",
+                                  "Glossario"])
+    U = data.universe(RUN)
+    with t1:
+        st.markdown("Il tuo investimento di oggi è un **ETF azionario mondiale**: in un solo acquisto possiedi una piccola "
+                    "parte di moltissime aziende di molti paesi, e il fallimento di una sola pesa pochissimo. È una scelta "
+                    "solida: diversificata, a basso costo, senza dover indovinare nulla.")
+        st.markdown("Scegliere singole azioni significa provare a fare **meglio** di quel risultato. Può succedere, ma anche "
+                    "l'opposto, e senza un metodo verificato la differenza è soprattutto fortuna. Ecco cosa dicono i dati "
+                    "che hai scaricato:")
+        from ire.risk import annualized_vol, max_drawdown
+
+        bser, bname = data.benchmark(RUN)
+        if bser is not None and len(bser) > 300:
+            bv, bd = annualized_vol(bser, 252), max_drawdown(bser, 5)
+            mv, md = U["vol_1y"].median(), U["max_drawdown_5y"].median()
+            c = st.columns(3)
+            c[0].metric("Oscillazione annua dell'ETF", pct(bv, 0) if bv is not None else "n/d",
+                        help=f"{bname}, ultimo anno, in euro. Più è alta, più il valore sale e scende.")
+            c[1].metric("Oscillazione annua dell'azione mediana", pct(mv, 0) if pd.notna(mv) else "n/d",
+                        help="Mediana delle società analizzate, ultimo anno, in euro.")
+            share = (U["vol_1y"] > bv).mean() if bv is not None else None
+            c[2].metric("Azioni più volatili dell'ETF", pct(share, 0) if share is not None and pd.notna(share) else "n/d",
+                        help="Quota delle società analizzate che hanno oscillato più dell'ETF nell'ultimo anno.")
+            c = st.columns(2)
+            c[0].metric("Peggior discesa dell'ETF (5 anni)", pct(bd, 0) if bd is not None else "n/d")
+            c[1].metric("Peggior discesa dell'azione mediana (5 anni)", pct(md, 0) if pd.notna(md) else "n/d")
+        st.markdown("**Come usare questo sito, in sicurezza:** il nucleo del tuo patrimonio resta diversificato. Le azioni "
+                    "singole, se un giorno le vorrai, sono una parte piccola da *studiare* e *provare a carta* prima. "
+                    "Il sito serve a studiare e a trovare idee, non a sostituire il tuo giudizio.")
+    with t2:
+        st.markdown("Scegli un'azienda e rispondi alle cinque domande che si fa un analista, con i numeri reali. "
+                    "Tra parentesi trovi la mediana delle aziende dello stesso settore.")
+        U2 = U.sort_values("robust_score", ascending=False, na_position="last")
+        port = data.portfolio(RUN)
+        first = (port.get("positions") or [{}])[0].get("company_id") if port else None
+        ids = list(U2["company_id"])
+        label_ = list(U2["label"])
+        pick = st.selectbox("Azienda", label_, index=ids.index(first) if first in ids else 0, key="learn_pick")
+        cid = ids[label_.index(pick)]
+        d = data.company(cid, RUN)
+        mdf = d["metrics"].set_index("metric") if not d["metrics"].empty else pd.DataFrame(columns=["value"])
+        med = (d["detail"] or {}).get("peer_medians") or {}
+        cur = d["company"].get("fin_currency")
+        for title, keys, how in LESSON:
+            with st.container(border=True):
+                st.markdown(f"**{title}**")
+                for k in keys:
+                    v = mdf.loc[k, "value"] if k in mdf.index else None
+                    line = f"- {label(k)}: **{fmt(k, v, cur)}**"
+                    if k in med and med[k] is not None:
+                        line += f" (mediana del settore: {fmt(k, med[k], cur)})"
+                    st.markdown(line)
+                    if explain(k):
+                        st.caption(explain(k))
+                st.markdown(esc(how))
+        with st.container(border=True):
+            st.markdown("**6. Cosa non so?**")
+            tier = d["company"].get("data_tier")
+            st.markdown(f"- Qualità dei dati: {'bilanci ufficiali SEC' if tier == 'A' else 'bilanci Yahoo Finance (storico breve)'}")
+            st.markdown(f"- Affidabilità del punteggio: **{d['score'].get('confidence') or 'n/d'}**")
+            fl = d["flags"]
+            if len(fl):
+                for _, f in fl[fl["severity"].isin(["severe", "high", "medium"])].head(5).iterrows():
+                    st.markdown(f"- {ui.sev_badge(f['severity'])} {esc(f['message'])}")
+            else:
+                st.markdown("- Nessuna segnalazione rilevante: ma l'assenza di segnali non è una garanzia.")
+            st.markdown("Il punteggio non prevede il futuro. Prima di decidere, apri la scheda completa e leggi cosa invaliderebbe la tesi.")
+    with t3:
+        st.markdown("Un sistema di punteggi può sembrare convincente e non funzionare. Per saperlo ci sono due prove: "
+                    "il **test storico** (cosa sarebbe successo in passato) e la **prova dal vivo** (cosa succede da oggi "
+                    "alle proposte vere). Finché non c'è evidenza, la regola è semplice: l'ETF resta il tuo nucleo.")
+        bt = data.latest_backtest()
+        if bt and bt.get("readings", {}).get("12"):
+            rd = bt["readings"]["12"]
+            st.markdown("**Test storico (12 mesi):** " + ui.badge(rd["level"], {"favorevole": "green", "non dimostrato": "orange",
+                                                                              "contrario": "red"}.get(rd["level"], "gray"))
+                        + "  " + esc(rd["text"]))
+        else:
+            st.info("Il test storico non è ancora stato eseguito: lancia run_backtest.bat.")
+        render_track_record()
+    with t4:
+        st.markdown("**Domande da farsi prima di comprare qualsiasi azione**")
+        for i, q_ in enumerate(CHECKLIST):
+            st.checkbox(q_, key=f"chk{i}")
+        st.markdown("**Errori che fanno quasi tutti i principianti**")
+        for title, text in MISTAKES:
+            st.markdown(f"- **{title}.** {text}")
+    with t5:
+        qtext = st.text_input("Cerca una parola (es. margine, debito, P/E)", "").strip().lower()
+        g = pd.DataFrame([{"Nome": v[0], "Che cosa significa": v[2]} for v in GLOSSARY.values()])
+        if qtext:
+            g = g[g["Nome"].str.lower().str.contains(qtext) | g["Che cosa significa"].str.lower().str.contains(qtext)]
+        st.dataframe(g, hide_index=True, width="stretch")
 
 
 def page_data():
@@ -1055,13 +1216,14 @@ PAGES = {
     "screener": st.Page(page_screener, title="Classifica", icon=":material/leaderboard:", url_path="classifica"),
     "portfolio": st.Page(page_portfolio, title="Portafoglio", icon=":material/pie_chart:", url_path="portafoglio"),
     "changes": st.Page(page_changes, title="Cambiamenti", icon=":material/notifications:", url_path="cambiamenti"),
+    "learn": st.Page(page_learn, title="Impara", icon=":material/school:", url_path="impara"),
     "backtest": st.Page(page_backtest, title="Verifica del metodo", icon=":material/fact_check:", url_path="verifica"),
     "data": st.Page(page_data, title="Dati e metodologia", icon=":material/menu_book:", url_path="dati"),
 }
 nav = st.navigation({
     "Analisi": [PAGES["home"], PAGES["company"], PAGES["compare"], PAGES["screener"]],
     "Portafoglio": [PAGES["portfolio"], PAGES["changes"]],
-    "Fiducia": [PAGES["backtest"], PAGES["data"]],
+    "Impara e verifica": [PAGES["learn"], PAGES["backtest"], PAGES["data"]],
 }, position="top")
 
 

@@ -197,3 +197,19 @@ def test_backtest_page_without_and_with_a_test(world, monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
     assert any("Leggi prima i limiti" in w.value for w in at.warning)
     assert len(at.metric) >= 6
+
+
+def test_learn_page_uses_real_numbers_and_the_glossary(world):
+    from ire.pipeline import Pipeline
+
+    Pipeline(mode="quick", verbose=False).run()
+    at = _page("learn")
+    assert not at.exception, [e.value for e in at.exception]
+    assert len(at.tabs) == 5 and len(at.checkbox) == 8
+    assert len(at.metric) >= 3                                       # volatility / drawdown computed from the stored prices
+    src = (ROOT / "app/app.py").read_text(encoding="utf-8")
+    page = src[src.index("def page_learn"):src.index("def page_data")]
+    # no market number is typed by hand in the lessons: every figure shown comes from the database
+    texts = re.findall(r'"([^"\n]{12,})"', page)
+    assert not [t for t in texts if re.search(r"\d+\s?%|\d+[.,]\d+", t) and "{" not in t and "%d" not in t], \
+        "cifre scritte a mano nella pagina Impara"

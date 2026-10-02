@@ -210,3 +210,11 @@ def latest_backtest() -> dict[str, Any] | None:
     out = _json.loads(row["summary"] or "{}")
     out.update({"bt_id": int(row["bt_id"]), "created_at": row["created_at"], "params": _json.loads(row["params"] or "{}")})
     return out
+
+
+@st.cache_data(ttl=300)
+def track_record() -> list[dict[str, Any]]:
+    """How the portfolios proposed by past analyses did since the day they were made (ire/track.py)."""
+    from ire.track import live_track_record
+
+    return live_track_record(con())
