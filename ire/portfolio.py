@@ -24,6 +24,7 @@ are descriptive, not a backtest (the names were selected knowing that past).
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -359,7 +360,15 @@ def enforce_caps(w: pd.Series, sectors: pd.Series, regions: pd.Series, min_w: fl
     if fixed:
         fb = [((fixed[nm], fixed[nm]) if nm in fixed and b[0] <= fixed[nm] <= b[1] else b)
               for nm, b in zip(names, base_bounds)]
-        res = solve(fb)
+        if all(lo_ == hi_ for lo_, hi_ in fb):
+            # every name is inside the band (e.g. nothing changed since the last run): no free variable, SLSQP
+            # cannot solve it; the previous weights are kept as they are if they still respect the caps
+            x_f = np.array([b[0] for b in fb])
+            ok = (abs(x_f.sum() - 1.0) < 1e-6 and all(S_m[j] @ x_f <= s_caps[j] + 1e-6 for j in range(k))
+                  and all(R_m[j] @ x_f <= rg_caps[j] + 1e-6 for j in range(m)))
+            res = SimpleNamespace(success=ok, x=x_f, message="pesi precedenti")
+        else:
+            res = solve(fb)
         if not res.success:
             res = None
             if log is not None:

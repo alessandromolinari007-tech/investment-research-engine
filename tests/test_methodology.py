@@ -432,3 +432,17 @@ def test_name_cap_relaxation_is_spread_evenly():
     assert out.max() == pytest.approx(1 / 12, abs=1e-6)
     port = construct_portfolio(_scores(12), _weekly(12), _cfg(min_positions=12))
     assert port["status"] != "concentrato" or any("area" in line or "settore" in line for line in port["log"])
+
+
+def test_no_trade_band_when_nothing_changed():
+    """Real run #4 (same data as #3): every holding was inside the band, all weights were fixed, the solver had no
+    free variable and failed → 'Banda di non intervento non applicabile', weights recomputed for everyone."""
+    sc = _scores(30)
+    weekly = _weekly(30)
+    first = construct_portfolio(sc, weekly, _cfg())
+    prev = {p["company_id"]: p["weight"] for p in first["positions"]}
+    second = construct_portfolio(sc, weekly, _cfg(no_trade_band=0.015), previous=prev)
+    assert not any("non applicabile" in line for line in second["log"]), second["log"]
+    new = {p["company_id"]: p["weight"] for p in second["positions"]}
+    assert new.keys() == prev.keys()
+    assert all(new[c] == pytest.approx(prev[c], abs=1e-9) for c in new)

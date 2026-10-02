@@ -195,6 +195,13 @@ class Pipeline:
         cands, report = build_universe(self.fx, self.mode, self.prices, progress=self.say,
                                        extra_tickers=self.extra, limit=self.limit)
         rows = candidate_rows(cands)
+        # which companies left the universe since the last run, and why (real run #4: 889 → 888 with no explanation)
+        before = {r["company_id"]: r["ticker"] for r in
+                  self.con.execute("SELECT company_id, ticker FROM companies WHERE in_universe=1")}
+        left = [(before[c.company_id], c.exclusion) for c in cands if c.exclusion and c.company_id in before]
+        if left and before:
+            self.say(f"   uscite dall'universo rispetto alla run precedente: {len(left)}: "
+                     + "; ".join(f"{t} ({e})" for t, e in left[:30]) + (" …" if len(left) > 30 else ""))
         # companies not in this run's candidate list are no longer in the universe; attributes learned
         # in earlier runs (sic, tier, filer type...) are kept for the others (merge, not replace)
         self.con.execute("UPDATE companies SET in_universe=0")

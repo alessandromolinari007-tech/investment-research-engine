@@ -421,3 +421,21 @@ def test_public_float_prefilter_keeps_forced_and_unknown():
              Candidate(ticker="C", source="SEC", cik="3"), Candidate(ticker="D", source="INTL")]
     n = public_float_prefilter(cands, {1: 1e6, 2: 1e6, 3: 0.0}, 2e9)
     assert n == 1 and cands[0].exclusion and not any(c.exclusion for c in cands[1:])
+
+
+def test_universe_exits_are_logged(world, monkeypatch):
+    """Real run #4: 889 → 888 companies with no explanation in the log. Exits are now listed with their reason."""
+    import ire.sources.sec as S
+    from ire.config import load_config
+    from ire.db import connect
+    from ire.pipeline import Pipeline
+
+    Pipeline(mode="quick", verbose=False).run()
+    small = world.us[0]
+    min_mcap = load_config().min_market_cap_usd("quick")
+    monkeypatch.setattr(S, "frame", lambda tax, concept, unit, period: (
+        [{"cik": int(small["cik"]), "end": "2025-06-30", "val": 0.01 * min_mcap}] if concept == "EntityPublicFloat" else []))
+    rid = Pipeline(mode="quick", verbose=False).run()
+    msgs = [r[0] for r in connect().execute("SELECT message FROM log WHERE run_id=?", (rid,))]
+    exits = [m for m in msgs if m.startswith("   uscite dall'universo")]
+    assert exits and small["ticker"] in exits[0] and "flottante" in exits[0]
